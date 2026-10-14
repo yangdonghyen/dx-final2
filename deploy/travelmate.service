@@ -1,0 +1,15 @@
+# /etc/systemd/system/travelmate.service
+[Unit]
+Description=TravelMate FastAPI backend
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/travelmate/backend
+Environment=PYTHONIOENCODING=utf-8
+# .env (secrets) lives in /opt/travelmate/backend/.env and is copied by hand, never committed.
+ExecStart=/opt/travelmate/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers --access-log
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
