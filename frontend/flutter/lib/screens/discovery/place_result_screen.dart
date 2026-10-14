@@ -75,6 +75,10 @@ class _PlaceResultScreenState extends State<PlaceResultScreen> {
                       height: 210,
                       width: double.infinity,
                       fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const SizedBox(
+                        height: 210,
+                        child: ColoredBox(color: Color(0xFFF3F4F6)),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 18),

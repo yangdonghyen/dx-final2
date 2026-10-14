@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:travel_mate/data/api/api_client.dart';
 import 'package:travel_mate/services/auth_service.dart';
@@ -18,6 +19,13 @@ class _RecordingClient extends http.BaseClient {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() async {
+    SharedPreferences.setMockInitialValues({});
+    await AuthSession.clear();
+  });
+
   tearDown(AuthSession.clear);
 
   test('saves sea and nature as separate interest codes', () async {

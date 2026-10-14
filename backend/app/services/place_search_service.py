@@ -7,10 +7,13 @@ from app.schemas.place import PlaceSearchItemResponse
 
 
 class PlaceSearchService:
-    def __init__(self, session, place_provider):
+    def __init__(self, session, place_provider, *, commit: bool = True):
         self.session = session
         self.places = PlaceRepository(session)
         self.place_provider = place_provider
+        # Plan generation owns its own all-or-nothing transaction.  Direct
+        # search endpoints retain the existing immediate-cache behaviour.
+        self.commit_on_success = commit
 
     @staticmethod
     def _fields(candidate, region):
@@ -66,7 +69,10 @@ class PlaceSearchService:
                         longitude=place.longitude,
                     )
                 )
-            self.session.commit()
+            if self.commit_on_success:
+                self.session.commit()
+            else:
+                self.session.flush()
             return results
         except Exception:
             self.session.rollback()

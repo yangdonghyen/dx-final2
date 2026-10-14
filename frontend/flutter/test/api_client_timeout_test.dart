@@ -23,6 +23,7 @@ void main() {
 
   test('AI plan timeout covers four 180 second model calls', () {
     expect(planAiRequestTimeout, greaterThan(const Duration(seconds: 720)));
+    expect(previewAiRequestTimeout, greaterThan(const Duration(seconds: 960)));
     expect(ApiClient.defaultTimeout, const Duration(seconds: 60));
   });
 

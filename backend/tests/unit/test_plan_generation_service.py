@@ -42,8 +42,16 @@ class Session:
         self.interest_codes = ["CULTURE"]
         self.commits = self.rollbacks = 0
 
-    def commit(self): self.commits += 1
-    def rollback(self): self.rollbacks += 1
+    def commit(self):
+        self.commits += 1
+        self._committed_selected_places = {trip_id: list(places) for trip_id, places in self.selected_places.items()}
+        self._committed_plans = dict(self.plans)
+        self._committed_items = list(self.items)
+    def rollback(self):
+        self.rollbacks += 1
+        self.selected_places = {trip_id: list(places) for trip_id, places in getattr(self, "_committed_selected_places", {}).items()}
+        self.plans = dict(getattr(self, "_committed_plans", {}))
+        self.items = list(getattr(self, "_committed_items", []))
     def flush(self): pass
 
 
@@ -129,7 +137,7 @@ class NearbyProvider:
 
 
 class NearbySearchService:
-    def __init__(self, session, provider): self.session = session; self.provider = provider
+    def __init__(self, session, provider, *, commit=True): self.session = session; self.provider = provider; self.commit = commit
     def upsert_candidates(self, candidates, region):
         result = []
         for candidate in candidates:
@@ -180,7 +188,63 @@ def test_selected_places_are_anchors_and_cached_nearby_places_are_reused(service
     assert response.days[0].items[0].latitude == 37.5
     assert response.days[0].items[-1].place_id is None
     assert response.days[0].items[-1].latitude is None
-    assert session.commits == 2
+    assert session.commits == 1
+
+
+@pytest.mark.parametrize("failure", [
+    AppError("ROUTE_TIME_CONFLICT", "verified route does not fit", 422),
+    TimeoutError("EXAONE timed out"),
+])
+def test_failed_generation_keeps_previously_committed_selection_and_plan_state(service, failure):
+    """Model/validation failures must not replace a user's saved anchors."""
+    generator, session, _, _ = service
+    previous = session.places[1]
+    session.selected_places[1] = [previous]
+    session.commit()  # Model the state that existed before this request.
+
+    class FailingProvider:
+        def generate_plan(self, *_args):
+            raise failure
+
+    generator.provider = FailingProvider()
+    with pytest.raises(type(failure)):
+        generator.generate(1, 1, [101])
+
+    assert [place.place_id for place in session.selected_places[1]] == [104]
+    assert session.plans == {}
+    assert session.items == []
+    assert session.commits == 1
+    assert session.rollbacks >= 1
+
+
+def test_late_save_validation_failure_rolls_back_selection_and_new_plan(service):
+    generator, session, _, _ = service
+    session.selected_places[1] = [session.places[1]]
+    session.commit()
+
+    class FailingValidation:
+        def validate(self, *_args):
+            raise AppError("OUTSIDE_OPENING_HOURS", "verified hours do not fit", 422)
+
+    generator.validation = FailingValidation()
+    with pytest.raises(AppError, match="verified hours"):
+        generator.generate(1, 1, [101])
+
+    assert [place.place_id for place in session.selected_places[1]] == [104]
+    assert session.plans == {}
+    assert session.items == []
+    assert session.commits == 1
+
+
+def test_omitted_place_ids_keep_existing_anchors(service):
+    generator, session, provider, _ = service
+    session.selected_places[1] = [session.places[0]]
+
+    generator.generate(1, 1, None)
+
+    assert session.selected_places[1] == [session.places[0]]
+    assert provider.calls[0][5][0]["place_id"] == 101
+    assert provider.calls[0][5][0]["is_anchor"] is True
 
 
 def test_generation_enriches_only_linked_places_before_ai_input(service):
@@ -250,7 +314,7 @@ def test_rest_slot_stays_unassigned_when_route_fact_is_unknown(service):
     attached = generator._attach_rest_cafes(proposal, places, session.trips[1], {"rest_frequency": "HIGH"})
 
     assert attached.days[0].items[1].item_type == "REST"
-    assert attached.days[0].items[1].title == "휴식 장소 미정"
+    assert attached.days[0].items[1].title == "자유 휴식"
 
 
 def test_mock_cafe_selection_logs_only_slot_diagnostics(service, caplog):
@@ -675,7 +739,7 @@ def test_missing_or_empty_selected_anchor_is_rejected(service):
         generator.generate(1, 1, [999])
     assert missing.value.code == "PLACE_NOT_FOUND" and provider.calls == []
     assert PlanGenerateRequest(selected_place_ids=[]).selected_place_ids == []
-    assert PlanGenerateRequest().selected_place_ids == []
+    assert PlanGenerateRequest().selected_place_ids is None
 
 
 def test_empty_ids_without_destination_are_rejected(service):
@@ -971,3 +1035,45 @@ def test_model_timeout_leaves_no_plan_and_the_trip_can_be_retried(service):
     provider.generate_plan = lambda *args: good_draft
     response = generator.generate(1, 1, [101])
     assert response.plan_id == session.plans[1].plan_id
+
+
+def _rest_slot_draft():
+    return GeneratedPlanDraft(days=[PlanDraftDay(date(2026, 10, 10), [
+        PlanDraftItem(1, "PLACE", "Museum", 101, "10:00", "11:00", "anchor"),
+        PlanDraftItem(2, "REST", "Rest", None, "11:10", "11:40", "rest"),
+    ])])
+
+
+def test_cafe_next_to_the_previous_stop_is_checked_with_a_walking_route(service):
+    # Trip 91: the car route between a beach and the cafe 60 m away is refused
+    # (Kakao result 104), so every candidate looked unverified.
+    generator, session, _, _ = service
+    generator.place_provider = NearbyProvider([
+        PlaceCandidate("KAKAO", "rest-cafe", "Verified Cafe", "CE7", "Seoul Jongno-gu 1", 37.5005, 126.9005, None, None),
+    ])
+    generator.naver_cafe_provider = NaverEvidence()
+    generator.route_provider = Routes({"WALK": RouteEstimate(85, "WALK", distance_meters=92)})
+    places = {place.place_id: place for place in session.places}
+
+    attached = generator._attach_rest_cafes(_rest_slot_draft(), places, session.trips[1], {"rest_frequency": "HIGH"})
+
+    cafe = attached.days[0].items[1]
+    assert (cafe.item_type, cafe.title, cafe.start_time, cafe.end_time) == ("PLACE", "Verified Cafe", "11:10", "11:40")
+    assert any(call[-1] == "WALK" for call in generator.route_provider.calls)
+
+
+def test_a_far_cafe_is_never_confirmed_by_a_walking_route(service):
+    generator, session, _, _ = service
+    generator.place_provider = NearbyProvider([
+        PlaceCandidate("KAKAO", "rest-cafe", "Far Cafe", "CE7", "Seoul Jongno-gu 1", 37.5100, 126.9100, None, None),
+    ])
+    generator.naver_cafe_provider = NaverEvidence()
+    generator.route_provider = Routes({"WALK": RouteEstimate(900, "WALK", distance_meters=1400)})
+    places = {place.place_id: place for place in session.places}
+
+    attached = generator._attach_rest_cafes(_rest_slot_draft(), places, session.trips[1], {"rest_frequency": "HIGH"})
+
+    rest = attached.days[0].items[1]
+    assert (rest.item_type, rest.place_id, rest.title) == ("REST", None, "자유 휴식")
+    assert "자유 휴식 시간" in rest.recommendation_reason
+    assert not any(call[-1] == "WALK" for call in generator.route_provider.calls)

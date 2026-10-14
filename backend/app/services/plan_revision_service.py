@@ -3,11 +3,12 @@ from datetime import time
 from app.core.exceptions import AppError
 from app.repositories.place_repository import PlaceRepository
 from app.repositories.plan_repository import PlanItemRepository, PlanRepository, PlanRevisionRepository, PlanValidationIssueRepository
-from app.repositories.trip_repository import TripRepository
+from app.repositories.trip_repository import TripCompanionRepository, TripRepository
 from app.schemas.plan import PlanConfirmResponse, PlanDayResponse, PlanDetailResponse, PlanItemResponse, PlanRegenerateRequest
 from app.services.plan_generation_service import GENERATIONS_IN_PROGRESS, PlanGenerationService, plan_generation_in_progress_error
 from app.services.plan_travel_time import travel_columns, travel_response_fields, travel_statuses
 from app.services.plan_validation_service import PlanValidationService
+from app.services.trip_access import require_plan_member
 
 
 class PlanRevisionService:
@@ -15,14 +16,16 @@ class PlanRevisionService:
         self.session = session; self.provider = provider
         self.plans = PlanRepository(session); self.items = PlanItemRepository(session); self.revisions = PlanRevisionRepository(session)
         self.issues = PlanValidationIssueRepository(session); self.trips = TripRepository(session); self.places = PlaceRepository(session)
+        self.members = TripCompanionRepository(session)
         self.generation = PlanGenerationService(session, provider, place_provider, route_provider); self.validation = PlanValidationService(session)
 
-    def _owned_plan(self, user_id, plan_id):
+    def _owned_plan(self, user_id, plan_id, members=False):
         plan = self.plans.get(plan_id)
         if plan is None: raise AppError("PLAN_NOT_FOUND", "Plan not found", 404)
         trip = self.trips.get(plan.trip_id)
         if trip is None: raise AppError("TRIP_NOT_FOUND", "Trip not found", 404)
-        if trip.user_id != user_id: raise AppError("FORBIDDEN", "You do not own this trip", 403)
+        if members: require_plan_member(self.members, trip, user_id)
+        elif trip.user_id != user_id: raise AppError("FORBIDDEN", "You do not own this trip", 403)
         if trip.status == "ARCHIVED": raise AppError("TRIP_ARCHIVED", "Trip is archived", 400)
         return plan, trip
 
@@ -46,6 +49,7 @@ class PlanRevisionService:
         return PlanItemResponse(
             item_id=item.item_id, place_id=item.place_id, name=item.title, start_time=item.start_time, end_time=item.end_time,
             validation_status=item.validation_status, item_type=getattr(item, "item_type", None),
+            note=getattr(item, "user_note", None),
             region=getattr(place, "region", None), address=getattr(place, "address", None),
             latitude=float(place.latitude) if getattr(place, "latitude", None) is not None else None,
             longitude=float(place.longitude) if getattr(place, "longitude", None) is not None else None,
@@ -67,7 +71,7 @@ class PlanRevisionService:
         return PlanDetailResponse(plan_id=plan.plan_id, status=plan.status, current_version=plan.current_version, validation_status=validation_status, days=days, warnings=[issue.message for issue in open_issues if issue.severity != "CRITICAL"])
 
     def get(self, user_id, plan_id):
-        plan, trip = self._owned_plan(user_id, plan_id)
+        plan, trip = self._owned_plan(user_id, plan_id, members=True)
         return self._response(plan, trip)
 
     def get_for_trip(self, user_id, trip_id):
@@ -79,7 +83,7 @@ class PlanRevisionService:
         """
         trip = self.trips.get(trip_id)
         if trip is None: raise AppError("TRIP_NOT_FOUND", "Trip not found", 404)
-        if trip.user_id != user_id: raise AppError("FORBIDDEN", "You do not own this trip", 403)
+        require_plan_member(self.members, trip, user_id)
         if trip.status == "ARCHIVED": raise AppError("TRIP_ARCHIVED", "Trip is archived", 400)
         plan = self.plans.get_by_trip_id(trip_id)
         if plan is not None: return self._response(plan, trip)

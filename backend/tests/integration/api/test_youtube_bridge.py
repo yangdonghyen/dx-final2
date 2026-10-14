@@ -49,3 +49,33 @@ def test_requirements_include_a_websocket_server_library():
         if line.strip() and not line.startswith("#")
     }
     assert names & {"websockets", "wsproto"} or "uvicorn[standard]" in requirements.read_text(encoding="utf-8")
+
+
+def test_pause_event_keeps_the_extension_event_id_and_reports_delivery(client, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(discovery, "get_content_provider", FakeContentProvider)
+    with caplog.at_level(logging.INFO, logger="app.youtube_bridge"), client.websocket_connect(EVENTS_PATH) as websocket:
+        response = client.post(
+            "/api/v1/discovery/youtube-pause",
+            json={"event": "pause", "video_id": "abc123", "position_sec": 7,
+                  "event_id": "ext-1", "detected_at": "2026-10-13T11:00:00Z"},
+        )
+        message = websocket.receive_json()
+    assert response.status_code == 200
+    assert response.json()["event_id"] == "ext-1" and response.json()["delivered_clients"] >= 1
+    assert message["event_id"] == "ext-1" and message["detected_at"] == "2026-10-13T11:00:00Z"
+    assert message["received_at"]
+    logs = [record.getMessage() for record in caplog.records]
+    assert any("EVENT_RECEIVED event_id=ext-1" in line for line in logs)
+    assert any("EVENT_DELIVERED event_id=ext-1" in line for line in logs)
+
+
+def test_pause_event_from_an_older_extension_gets_a_server_event_id(client, monkeypatch):
+    monkeypatch.setattr(discovery, "get_content_provider", FakeContentProvider)
+    with client.websocket_connect(EVENTS_PATH) as websocket:
+        client.post("/api/v1/discovery/youtube-pause", json={"event": "pause", "video_id": "abc123", "position_sec": 7})
+        first = websocket.receive_json()
+        client.post("/api/v1/discovery/youtube-pause", json={"event": "pause", "video_id": "abc123", "position_sec": 7})
+        second = websocket.receive_json()
+    assert first["event_id"] and second["event_id"] and first["event_id"] != second["event_id"]

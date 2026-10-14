@@ -46,10 +46,38 @@ if (-not (Test-Path -LiteralPath .env)) { Copy-Item -LiteralPath .env.example -D
 - 실제 Secret을 코드/문서/Git에 넣지 않습니다. `.env` 및 `.env.*`는 제외하고
   `.env.example`만 추적하도록 `.gitignore`에 설정했습니다.
 
+### Local EXAONE plan generation
+
+After filling the required MySQL and JWT values in the untracked `.env`, use
+the installed Ollama model name exactly as follows. `PLACE_PROVIDER=real`
+also requires the existing Kakao REST API credential; without it a destination
+wide real-place search cannot be verified.
+
+```dotenv
+PLAN_PROVIDER=real
+PLACE_PROVIDER=real
+EXAONE_BASE_URL=http://127.0.0.1:11434
+EXAONE_MODEL=hf.co/LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct-GGUF:Q4_K_M
+AI_API_TIMEOUT_SECONDS=180
+```
+
+`ROUTE_PROVIDER=kakao` is optional but recommended only after its Kakao
+credential is configured. When unavailable, route facts remain `UNKNOWN`; the
+application does not invent travel times.
+
 ## 실행
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+```
+
+Android 실기기에서 같은 PC의 개발 서버를 사용할 때는 loopback 기본값 대신
+LAN 인터페이스에 바인딩합니다. PC와 휴대폰은 같은 네트워크에 있어야 하며,
+Windows 방화벽에서 Python/8000의 사설 네트워크 인바운드 허용 여부는 사용자가
+확인합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 - Health: http://localhost:8000/api/v1/health → `200 {"status":"ok"}`

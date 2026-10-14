@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'upcoming_trips_screen.dart';
 import '../../core/layout/app_responsive.dart';
 import '../../core/theme/app_theme.dart';
 import '../../services/auth_service.dart';
@@ -487,9 +488,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             SizedBox(width: 12),
             Expanded(
-              child: _BasicStat(
-                value: _upcomingTripCount?.toString() ?? '-',
-                label: '예정 여행',
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const UpcomingTripsScreen()),
+                ),
+                child: _BasicStat(
+                  value: _upcomingTripCount?.toString() ?? '-',
+                  label: '예정 여행',
+                ),
               ),
             ),
           ],

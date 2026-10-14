@@ -12,8 +12,11 @@ typedef YoutubeBridgeScheduler =
 /// (`/api/v1/discovery/youtube-events`).
 ///
 /// A failed or dropped connection is retried with exponential backoff
-/// (2s, 4s, 8s, 16s, 30s) and gives up after [maxReconnectAttempts] failures
-/// in a row. The next [start] call (e.g. opening Home again) tries again.
+/// (2s, 4s, 8s, 16s, then every 30s) for as long as a screen keeps the
+/// bridge started, so a backend restart recovers without reopening the app.
+/// [stop] (Home hidden, app in background) ends the retries.
+///
+/// Log steps: CONNECTED / RECONNECTED / DISCONNECTED / EVENT_RECEIVED.
 class YoutubeBridgeService {
   YoutubeBridgeService._({
     YoutubeBridgeConnector? connect,
@@ -37,6 +40,7 @@ class YoutubeBridgeService {
     defaultValue: 'http://127.0.0.1:8000',
   );
 
+  /// Reconnects after which the delay stays at the 30-second ceiling.
   static const maxReconnectAttempts = 5;
   static const _maxDelay = Duration(seconds: 30);
 
@@ -54,6 +58,7 @@ class YoutubeBridgeService {
   bool _stopped = true;
   int _users = 0;
   int _failures = 0;
+  bool _connectedBefore = false;
   Timer? _reconnectTimer;
 
   bool get isConnected => _socket != null;
@@ -86,6 +91,7 @@ class YoutubeBridgeService {
     _users++;
     _stopped = false;
     _failures = 0;
+    _connectedBefore = false;
     await _open();
   }
 
@@ -112,14 +118,22 @@ class YoutubeBridgeService {
       _socket = socket;
       _failures = 0;
 
-      debugPrint('[YouTube Bridge] SERVICE connected: $wsUri');
+      debugPrint(
+        '[YouTube Bridge] ${_connectedBefore ? 'RECONNECTED' : 'CONNECTED'}: $wsUri',
+      );
+      _connectedBefore = true;
 
       socket.listen(
         (message) {
-          debugPrint('[YouTube Bridge] SERVICE received: $message');
-
           try {
             final decoded = jsonDecode(message as String);
+            if (decoded is Map) {
+              debugPrint(
+                '[YouTube Bridge] EVENT_RECEIVED '
+                'event_id=${decoded['event_id']} video_id=${decoded['video_id']} '
+                'position_sec=${decoded['position_sec']}',
+              );
+            }
 
             if (decoded is Map<String, dynamic>) {
               _eventController.add(decoded);
@@ -137,7 +151,7 @@ class YoutubeBridgeService {
         },
         onDone: () {
           debugPrint(
-            '[YouTube Bridge] SERVICE disconnected '
+            '[YouTube Bridge] DISCONNECTED '
             'code=${socket.closeCode} '
             'reason=${socket.closeReason}',
           );
@@ -165,15 +179,9 @@ class YoutubeBridgeService {
     }
 
     _failures++;
-    if (_failures > maxReconnectAttempts) {
-      debugPrint(
-        '[YouTube Bridge] SERVICE gave up after '
-        '$maxReconnectAttempts reconnects',
-      );
-      return;
-    }
-
-    final delay = reconnectDelay(_failures);
+    final delay = reconnectDelay(
+      _failures > maxReconnectAttempts ? maxReconnectAttempts : _failures,
+    );
     debugPrint(
       '[YouTube Bridge] SERVICE reconnecting in ${delay.inSeconds} seconds',
     );
@@ -201,6 +209,6 @@ class YoutubeBridgeService {
       await socket.close(WebSocketStatus.normalClosure, 'service stopped');
     }
 
-    debugPrint('[YouTube Bridge] SERVICE stopped');
+    debugPrint('[YouTube Bridge] SERVICE stopped (no events until started again)');
   }
 }

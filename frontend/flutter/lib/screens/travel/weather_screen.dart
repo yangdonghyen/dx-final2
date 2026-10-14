@@ -10,7 +10,14 @@ import '../../services/weather_background_service.dart';
 import '../../services/weather_notification_service.dart';
 import '../../services/weather_service.dart';
 import '../../widgets/app_bottom_navigation.dart';
+import '../trip/itinerary_screen.dart';
 import 'today_travel_screen.dart';
+
+/// What the AI is asked for when plan 2/3 is applied to the saved itinerary.
+const weatherPlanInstructions = <int, String>{
+  2: 'Rain is forecast. Prefer indoor places and rest, and keep outdoor walking short.',
+  3: 'A hot day is forecast. Visit outdoor places early, and add shade or indoor rest in the afternoon.',
+};
 
 /// 현재 위치 날씨·일별 예보와 날씨에 맞춘 여행 계획을 보여주는 화면입니다.
 class WeatherScreen extends StatefulWidget {
@@ -45,7 +52,9 @@ class _WeatherScreenState extends State<WeatherScreen> {
     _weatherFuture = _weatherAtCurrentPosition();
   }
 
-  void _retry() => setState(() => _weatherFuture = _weatherAtCurrentPosition());
+  void _retry() => setState(() {
+    _weatherFuture = _weatherAtCurrentPosition();
+  });
 
   Future<WeatherData> _weatherAtCurrentPosition() async {
     if (!await Geolocator.isLocationServiceEnabled()) {
@@ -345,6 +354,24 @@ class _WeatherScreenState extends State<WeatherScreen> {
                 style: const TextStyle(fontSize: 15, height: 1.42),
               ),
               const SizedBox(height: 12),
+              if (weatherPlanInstructions[_plan] != null &&
+                  (ActiveTripService.planId != null || ActiveTripService.tripId != null)) ...[
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => ItineraryScreen(
+                        weatherInstruction: weatherPlanInstructions[_plan],
+                      ),
+                    ),
+                  ),
+                  icon: const Icon(Icons.auto_fix_high_rounded),
+                  label: Text(_plan == 3 ? '계획 3으로 내 일정 수정안 만들기' : '계획 2로 내 일정 수정안 만들기'),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(54),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
               FilledButton(
                 onPressed: () => Navigator.of(context).push(
                   MaterialPageRoute(

@@ -1,3 +1,4 @@
+from sqlalchemy.exc import IntegrityError
 from app.core.exceptions import AppError
 from app.repositories.youtube_saved_discovery_repository import (
     YouTubeSavedDiscoveryRepository,
@@ -133,6 +134,18 @@ class YouTubeSavedDiscoveryService:
 
             return discovery
 
+        except IntegrityError:
+            # Two taps (저장하기 + 여행 계획하기) save the same video and
+            # position at once; the slower one returns the row the first made.
+            self.session.rollback()
+            existing = self.saved_discoveries.get_by_user_video_position(
+                user_id=user_id,
+                video_id=request.video_id,
+                position_sec=request.position_sec,
+            )
+            if existing is None:
+                raise
+            return existing
         except Exception:
             self.session.rollback()
             raise

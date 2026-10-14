@@ -15,6 +15,16 @@ class AuthSession {
   static const _accessTokenKey = 'auth_access_token';
   static const _refreshTokenKey = 'auth_refresh_token';
   static const _displayNameKey = 'auth_display_name';
+  static const _autoLoginKey = 'auth_auto_login';
+
+  /// "자동 로그인" was checked at the last login: the app opens Home on start.
+  static bool autoLogin = false;
+
+  static Future<void> setAutoLogin(bool value) async {
+    autoLogin = value;
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(_autoLoginKey, value);
+  }
 
   static String? accessToken;
   static String? refreshToken;
@@ -59,6 +69,7 @@ class AuthSession {
     accessToken = preferences.getString(_accessTokenKey);
     refreshToken = preferences.getString(_refreshTokenKey);
     displayName = preferences.getString(_displayNameKey);
+    autoLogin = preferences.getBool(_autoLoginKey) ?? false;
   }
 
   static Future<void> store({
@@ -114,7 +125,9 @@ class AuthSession {
     accessToken = null;
     refreshToken = null;
     displayName = null;
+    autoLogin = false;
     final preferences = await SharedPreferences.getInstance();
+    await preferences.remove(_autoLoginKey);
     await preferences.remove(_accessTokenKey);
     await preferences.remove(_refreshTokenKey);
     await preferences.remove(_displayNameKey);
@@ -123,13 +136,19 @@ class AuthSession {
 }
 
 class AuthService {
-  AuthService({ApiClient? apiClient, MethodChannel? naverChannel})
+  AuthService({
+    ApiClient? apiClient,
+    MethodChannel? naverChannel,
+    Future<String?> Function(String accessToken)? naverIdentifier,
+  })
     : _apiClient = apiClient ?? ApiClient(),
       _naverChannel =
-          naverChannel ?? const MethodChannel('travelmate/naver_auth');
+          naverChannel ?? const MethodChannel('travelmate/naver_auth'),
+      _naverIdentifierOverride = naverIdentifier;
 
   final ApiClient _apiClient;
   final MethodChannel _naverChannel;
+  final Future<String?> Function(String accessToken)? _naverIdentifierOverride;
 
   Future<void> _storeTokens(Map<String, dynamic> response) async {
     final accessToken = response['access_token'];
@@ -149,6 +168,31 @@ class AuthService {
           : null,
       displayName: nickname is String ? nickname : null,
     );
+  }
+
+  /// Auto login: trades the saved refresh token for a fresh access token.
+  /// Returns false (and keeps the user on the login screen) when it fails.
+  Future<bool> resumeSession() async {
+    final refresh = AuthSession.refreshToken;
+    if (!AuthSession.autoLogin || refresh == null || refresh.isEmpty) return false;
+    try {
+      final response = await _apiClient.post(
+        '/api/v1/auth/refresh',
+        body: {'refresh_token': refresh},
+      );
+      final access = response['access_token'];
+      final rotated = response['refresh_token'];
+      if (access is! String || access.isEmpty) return false;
+      await AuthSession.store(
+        accessToken: access,
+        refreshToken: rotated is String && rotated.isNotEmpty ? rotated : refresh,
+        displayName: AuthSession.displayName,
+      );
+      return true;
+    } catch (error) {
+      debugPrint('[Auth] auto login failed: $error');
+      return false;
+    }
   }
 
   Future<void> registerLocal(
@@ -225,7 +269,8 @@ class AuthService {
     );
     await _storeTokens(response);
     try {
-      final identifier = await _naverIdentifier(naverAccessToken);
+      final identifier = await (_naverIdentifierOverride?.call(naverAccessToken) ??
+          _naverIdentifier(naverAccessToken));
       if (identifier != null) await AuthSession.setDisplayName(identifier);
     } catch (error) {
       // Keep the server nickname when Naver does not return the profile.

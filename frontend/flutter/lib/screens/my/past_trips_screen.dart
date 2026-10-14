@@ -1,23 +1,36 @@
 import 'package:flutter/material.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../services/active_trip_service.dart';
+import '../../services/plan_service.dart';
 import '../../services/trip_service.dart';
 import '../../widgets/app_bottom_navigation.dart';
+import '../trip/itinerary_screen.dart';
 
 class PastTripsScreen extends StatefulWidget {
-  const PastTripsScreen({super.key, this.selectedTab = 3});
+  const PastTripsScreen({
+    super.key,
+    this.selectedTab = 3,
+    this.tripService,
+    this.planService,
+  });
 
   final int selectedTab;
+  final TripService? tripService;
+  final PlanService? planService;
 
   @override
   State<PastTripsScreen> createState() => _PastTripsScreenState();
 }
 
 class _PastTripsScreenState extends State<PastTripsScreen> {
-  final TripService _tripService = TripService();
+  late final TripService _tripService = widget.tripService ?? TripService();
+  late final PlanService _planService = widget.planService ?? PlanService();
 
   bool _loading = true;
   String? _errorMessage;
+  int? _openingTripId;
+  final Map<String, Future<String?>> _images = {};
   List<TripListItem> _pastTrips = const [];
 
   @override
@@ -72,6 +85,108 @@ class _PastTripsScreenState extends State<PastTripsScreen> {
         _loading = false;
         _errorMessage = '지난 여행을 불러오지 못했어요.';
       });
+    }
+  }
+
+  /// Reuses the saved server plan instead of constructing a past-trip preview.
+  /// This is intentionally the same lookup path used by UpcomingTripsScreen.
+  Future<void> _openTrip(TripListItem trip) async {
+    if (_openingTripId != null) return;
+    setState(() => _openingTripId = trip.tripId);
+
+    try {
+      final lookup = await _planService.findForTrip(trip.tripId);
+      if (!mounted) return;
+
+      final plan = lookup.plan;
+      if (lookup.state != TripPlanState.ready || plan == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              lookup.state == TripPlanState.generating
+                  ? '여행 일정을 아직 만들고 있어요.'
+                  : '저장된 여행 일정이 없어요.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      final start = trip.startDate;
+      final end = trip.endDate;
+      final dates = start != null && end != null && !end.isBefore(start)
+          ? DateTimeRange(start: start, end: end)
+          : null;
+      final places = <String>{
+        for (final day in plan.days)
+          for (final item in day.items)
+            if (item.placeId != null && item.name.trim().isNotEmpty)
+              item.name.trim(),
+      }.toList();
+
+      ActiveTripService.save(
+        savedTripId: trip.tripId,
+        savedPlanId: plan.planId,
+        tripDates: dates,
+        selectedTransport: const <String>{},
+        selectedPlaces: places,
+      );
+
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ItineraryScreen(
+            tripDates: dates,
+            places: places,
+            generatedPlan: plan,
+            planService: _planService,
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(planErrorMessage(error))),
+      );
+    } finally {
+      if (mounted) setState(() => _openingTripId = null);
+    }
+  }
+
+  /// One lookup per region; a failed lookup just leaves the plain cover.
+  Future<String?>? _imageFor(TripListItem trip) {
+    final destination = trip.destination?.trim();
+    if (destination == null || destination.isEmpty) return null;
+    return _images.putIfAbsent(
+      destination,
+      () => _tripService.destinationImage(destination).catchError((_) => null),
+    );
+  }
+
+  Future<void> _discardTrip(TripListItem trip) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('이 여행을 버릴까요?'),
+        content: Text('${_TripCard._displayTitle(trip)}이(가) 지난 여행 목록에서 사라져요.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('취소')),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFDC2626)),
+            child: const Text('버리기'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await _tripService.discard(trip.tripId);
+      if (!mounted) return;
+      setState(() => _pastTrips = [for (final row in _pastTrips) if (row.tripId != trip.tripId) row]);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('여행을 버렸어요.')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(planErrorMessage(error))));
     }
   }
 
@@ -199,7 +314,14 @@ class _PastTripsScreenState extends State<PastTripsScreen> {
         itemCount: _pastTrips.length,
         separatorBuilder: (_, _) => const SizedBox(height: 16),
         itemBuilder: (context, index) {
-          return _TripCard(trip: _pastTrips[index]);
+          final trip = _pastTrips[index];
+          return _TripCard(
+            trip: trip,
+            opening: _openingTripId == trip.tripId,
+            onTap: () => _openTrip(trip),
+            onDiscard: () => _discardTrip(trip),
+            image: _imageFor(trip),
+          );
         },
       ),
     );
@@ -207,9 +329,33 @@ class _PastTripsScreenState extends State<PastTripsScreen> {
 }
 
 class _TripCard extends StatelessWidget {
-  const _TripCard({required this.trip});
+  const _TripCard({
+    required this.trip,
+    required this.opening,
+    required this.onTap,
+    required this.onDiscard,
+    this.image,
+  });
 
   final TripListItem trip;
+  final bool opening;
+  final VoidCallback onTap;
+  final VoidCallback onDiscard;
+  final Future<String?>? image;
+
+  static const _plainCover = DecoratedBox(
+    decoration: BoxDecoration(
+      gradient: LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [AppColors.soft, Color(0xFFC7D4F5)],
+      ),
+    ),
+    child: Align(
+      alignment: Alignment(0, -0.3),
+      child: Icon(Icons.luggage_rounded, size: 56, color: AppColors.primary),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -227,30 +373,27 @@ class _TripCard extends StatelessWidget {
       color: Colors.white,
       borderRadius: BorderRadius.circular(24),
       clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+      child: InkWell(
+        onTap: opening ? null : onTap,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
           SizedBox(
             height: 160,
             child: Stack(
               fit: StackFit.expand,
               children: [
-                const DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [AppColors.soft, Color(0xFFC7D4F5)],
-                    ),
-                  ),
-                  child: Align(
-                    alignment: Alignment(0, -0.3),
-                    child: Icon(
-                      Icons.luggage_rounded,
-                      size: 56,
-                      color: AppColors.primary,
-                    ),
-                  ),
+                FutureBuilder<String?>(
+                  future: image,
+                  builder: (context, snapshot) {
+                    final url = snapshot.data;
+                    if (url == null) return _plainCover;
+                    return Image.network(
+                      url,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => _plainCover,
+                    );
+                  },
                 ),
                 const DecoratedBox(
                   decoration: BoxDecoration(
@@ -259,6 +402,16 @@ class _TripCard extends StatelessWidget {
                       end: Alignment.center,
                       colors: [Color(0x99000000), Colors.transparent],
                     ),
+                  ),
+                ),
+                Positioned(
+                  top: 6,
+                  right: 6,
+                  child: IconButton(
+                    onPressed: onDiscard,
+                    tooltip: '여행 버리기',
+                    style: IconButton.styleFrom(backgroundColor: const Color(0x66000000)),
+                    icon: const Icon(Icons.delete_outline_rounded, color: Colors.white),
                   ),
                 ),
                 Positioned(
@@ -292,16 +445,32 @@ class _TripCard extends StatelessWidget {
               ],
             ),
           ),
-          if (chips.isNotEmpty)
+          if (chips.isNotEmpty || opening)
             Padding(
               padding: const EdgeInsets.all(16),
-              child: Wrap(
-                spacing: 5,
-                runSpacing: 5,
-                children: chips.map((chip) => _PlaceChip(data: chip)).toList(),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Wrap(
+                      spacing: 5,
+                      runSpacing: 5,
+                      children:
+                          chips.map((chip) => _PlaceChip(data: chip)).toList(),
+                    ),
+                  ),
+                  if (opening)
+                    const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  else
+                    const Icon(Icons.chevron_right_rounded),
+                ],
               ),
             ),
-        ],
+          ],
+        ),
       ),
     );
   }

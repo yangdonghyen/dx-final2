@@ -1,4 +1,7 @@
 import asyncio
+import logging
+import uuid
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
@@ -66,6 +69,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from app.schemas.youtube_bridge import YouTubePauseEvent
 from app.services.youtube_bridge_manager import youtube_bridge_manager
+
+bridge_logger = logging.getLogger("app.youtube_bridge")
 from app.services.youtube_saved_discovery_service import (
     YouTubeSavedDiscoveryService,
 )
@@ -117,11 +122,10 @@ async def receive_youtube_pause(
     payload: YouTubePauseEvent,
 ):
     """Receive a YouTube pause event from the demo playback device."""
-    print(
-        "[YouTube Bridge]",
-        f"event={payload.event}",
-        f"video_id={payload.video_id}",
-        f"position_sec={payload.position_sec}",
+    event_id = payload.event_id or uuid.uuid4().hex
+    bridge_logger.info(
+        "youtube_bridge EVENT_RECEIVED event_id=%s video_id=%s position_sec=%s",
+        event_id, payload.video_id, payload.position_sec,
     )
 
     title = None
@@ -138,16 +142,9 @@ async def receive_youtube_pause(
         channel_title = metadata.channel_title
         thumbnail_url = metadata.thumbnail_url
 
-        print(
-            "[YouTube Bridge Metadata]",
-            f"title={title}",
-            f"channel={channel_title}",
-        )
+        bridge_logger.info("youtube_bridge METADATA_OK event_id=%s", event_id)
     except AppError as error:
-        print(
-            "[YouTube Bridge Metadata]",
-            f"lookup failed code={error.code}",
-        )
+        bridge_logger.info("youtube_bridge METADATA_FAILED event_id=%s code=%s", event_id, error.code)
 
     message = {
         "event": payload.event,
@@ -157,12 +154,18 @@ async def receive_youtube_pause(
         "title": title,
         "channel_title": channel_title,
         "thumbnail_url": thumbnail_url,
+        "event_id": event_id,
+        "detected_at": payload.detected_at,
+        "received_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    await youtube_bridge_manager.broadcast(message)
+    delivered = await youtube_bridge_manager.broadcast(message)
+    bridge_logger.info("youtube_bridge EVENT_DELIVERED event_id=%s clients=%s", event_id, delivered)
 
     return {
         "received": True,
+        "event_id": event_id,
+        "delivered_clients": delivered,
         "event": payload.event,
         "video_id": payload.video_id,
         "position_sec": payload.position_sec,
@@ -250,6 +253,8 @@ async def youtube_events(websocket: WebSocket):
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
+        pass
+    finally:
         youtube_bridge_manager.disconnect(websocket)
 
 

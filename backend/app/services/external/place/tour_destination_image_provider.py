@@ -825,3 +825,22 @@ class TourDestinationImageProvider:
             row_index += 1
 
         return candidates
+
+    def search_destination_image(self, destination_name: str) -> str | None:
+        """Representative TourAPI photo of a region (KTO, 공공누리).
+
+        Tourist spots named "<region> ..." are the region's own landmarks
+        (강릉 경포대, 수원 화성, 부산 감천문화마을); the first with a photo wins,
+        otherwise the first tourist spot with a photo.
+        """
+        name = (destination_name or "").strip()
+        if not name:
+            return None
+        payload = self._get_json(
+            "searchKeyword2",
+            {"keyword": name, "contentTypeId": 12, "arrange": "Q", "numOfRows": 40, "pageNo": 1},
+        )
+        rows = [row for row in self._response_rows(payload) if str(row.get("firstimage") or "").strip()]
+        named = [row for row in rows if str(row.get("title") or "").startswith(f"{name} ")]
+        chosen = (named or rows or [None])[0]
+        return self._normalize_image_url(str(chosen["firstimage"])) if chosen else None

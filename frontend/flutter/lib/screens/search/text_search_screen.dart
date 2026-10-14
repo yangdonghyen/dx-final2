@@ -268,11 +268,18 @@ class _TextSearchScreenState extends State<TextSearchScreen> {
     return null;
   }
 
-  void _openTrip({String? destination, Set<String> places = const {}}) {
+  void _openTrip({
+    String? destination,
+    Set<PlaceSearchResult> places = const {},
+  }) {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) =>
-            TripPlacesScreen(destination: destination, initialPlaces: places),
+            TripPlacesScreen(
+              destination: destination,
+              initialPlaces: {for (final place in places) place.name},
+              initialPlaceIds: {for (final place in places) place.placeId},
+            ),
       ),
     );
   }
@@ -367,7 +374,7 @@ class _TextSearchScreenState extends State<TextSearchScreen> {
                 child: FilledButton(
                   onPressed: () {
                     Navigator.of(sheetContext).pop();
-                    _openTrip(destination: region, places: {place.name});
+                    _openTrip(destination: region, places: {place});
                   },
                   style: FilledButton.styleFrom(
                     minimumSize: const Size.fromHeight(54),

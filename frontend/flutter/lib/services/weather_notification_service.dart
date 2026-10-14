@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -19,6 +20,16 @@ class WeatherNotificationService {
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
   Future<void>? _initialization;
+
+  /// True after the user taps a rain notification (app running or cold
+  /// start).  Home opens the rain plan (계획 2) once signed in, then resets it.
+  final ValueNotifier<bool> rainPlanRequested = ValueNotifier(false);
+
+  static const _payload = 'weather';
+
+  void _onTap(NotificationResponse response) {
+    if (response.payload == _payload) rainPlanRequested.value = true;
+  }
 
   Future<void> initialize() => _ensureInitialized();
 
@@ -63,7 +74,7 @@ class WeatherNotificationService {
             priority: Priority.high,
           ),
         ),
-        payload: 'weather',
+        payload: _payload,
       );
       await preferences.setBool(sentKey, true);
     } catch (_) {
@@ -78,7 +89,15 @@ class WeatherNotificationService {
     const settings = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     );
-    await _notifications.initialize(settings: settings);
+    await _notifications.initialize(
+      settings: settings,
+      onDidReceiveNotificationResponse: _onTap,
+    );
+    final launch = await _notifications.getNotificationAppLaunchDetails();
+    final response = launch?.notificationResponse;
+    if ((launch?.didNotificationLaunchApp ?? false) && response != null) {
+      _onTap(response);
+    }
 
     final android = _notifications
         .resolvePlatformSpecificImplementation<

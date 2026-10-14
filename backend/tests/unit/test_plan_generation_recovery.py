@@ -83,6 +83,7 @@ def _lookup_service(plan=None, place=None, owner=1):
     svc.items = SimpleNamespace(list=lambda plan_id: list(rows))
     svc.issues = SimpleNamespace(list_open=lambda plan_id: [])
     svc.places = SimpleNamespace(get=lambda place_id: place if place_id == 501 else None)
+    svc.members = SimpleNamespace(get_member=lambda trip_id, user_id: None)  # no invited members
     return svc
 
 

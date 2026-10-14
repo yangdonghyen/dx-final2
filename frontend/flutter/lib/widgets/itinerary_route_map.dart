@@ -5,7 +5,11 @@ import 'package:latlong2/latlong.dart';
 import '../core/theme/app_theme.dart';
 
 /// Shows ordered itinerary stops using the same live map as Explore.
-class ItineraryRouteMap extends StatelessWidget {
+///
+/// The camera fits the given stops when the map first appears and again
+/// whenever a different set of stops is passed (another DAY, or the 전체
+/// tab).  Rebuilds with the same stops never move a map the user panned.
+class ItineraryRouteMap extends StatefulWidget {
   const ItineraryRouteMap({
     super.key,
     required this.points,
@@ -21,8 +25,81 @@ class ItineraryRouteMap extends StatelessWidget {
   final String label;
   final ValueChanged<int>? onMarkerTap;
 
+  /// Zoom used when the day has a single stop (a fit would zoom in fully).
+  static const singleStopZoom = 15.0;
+
+  @override
+  State<ItineraryRouteMap> createState() => _ItineraryRouteMapState();
+}
+
+class _ItineraryRouteMapState extends State<ItineraryRouteMap> {
+  final MapController _controller = MapController();
+  bool _ready = false;
+
+  List<ItineraryMapPoint> get points => widget.points.where((item) => _isValid(item.position)).toList();
+  bool get satellite => widget.satellite;
+  double get height => widget.height;
+  String get label => widget.label;
+  ValueChanged<int>? get onMarkerTap => widget.onMarkerTap;
+
+  static bool _isValid(LatLng position) =>
+      position.latitude.isFinite &&
+      position.longitude.isFinite &&
+      position.latitude.abs() <= 90 &&
+      position.longitude.abs() <= 180 &&
+      !(position.latitude == 0 && position.longitude == 0);
+
+  /// The camera that shows every stop: a margin around several stops, a
+  /// street-level zoom for one, nothing for none.
+  static CameraFit? cameraFitFor(List<LatLng> positions) {
+    if (positions.isEmpty) return null;
+    return CameraFit.coordinates(
+      coordinates: positions,
+      padding: const EdgeInsets.fromLTRB(36, 56, 36, 28),
+      maxZoom: ItineraryRouteMap.singleStopZoom,
+      minZoom: 3,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant ItineraryRouteMap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final before = oldWidget.points.map((item) => item.position).toList();
+    final after = widget.points.map((item) => item.position).toList();
+    if (_ready && !_samePositions(before, after)) _fitToPoints();
+  }
+
+  static bool _samePositions(List<LatLng> a, List<LatLng> b) {
+    if (a.length != b.length) return false;
+    for (var index = 0; index < a.length; index++) {
+      if (a[index] != b[index]) return false;
+    }
+    return true;
+  }
+
+  void _fitToPoints() {
+    final fit = cameraFitFor(points.map((item) => item.position).toList());
+    if (fit == null) return;
+    // After this frame, so the map has its size for the new stops.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_ready) return;
+      try {
+        _controller.fitCamera(fit);
+      } catch (error) {
+        debugPrint('[ItineraryMap] fit failed: $error');
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final points = this.points;
     final center = _centerFor(points);
     final urlTemplate = satellite
         ? 'https://server.arcgisonline.com/ArcGIS/rest/services/'
@@ -34,7 +111,13 @@ class ItineraryRouteMap extends StatelessWidget {
       child: Stack(
         children: [
           FlutterMap(
-            options: MapOptions(initialCenter: center, initialZoom: 13.2),
+            mapController: _controller,
+            options: MapOptions(
+              initialCenter: center,
+              initialZoom: 13.2,
+              initialCameraFit: cameraFitFor(points.map((item) => item.position).toList()),
+              onMapReady: () => _ready = true,
+            ),
             children: [
               TileLayer(
                 urlTemplate: urlTemplate,

@@ -23,9 +23,10 @@ class Place:
 
 
 class Session:
-    def __init__(self): self.places={}; self.commits=self.rollbacks=0
+    def __init__(self): self.places={}; self.commits=self.rollbacks=self.flushes=0
     def commit(self): self.commits+=1
     def rollback(self): self.rollbacks+=1
+    def flush(self): self.flushes+=1
 
 
 class Places:
@@ -84,6 +85,17 @@ def test_place_search_deduplicates_provider_external_ids_in_order(place_service)
 def test_empty_place_search_returns_empty_list(place_service):
     service,session,provider=place_service; provider.candidates=[]
     assert service.search("nothing")==[] and session.commits==1
+
+
+def test_plan_owned_place_upsert_flushes_without_committing(place_service):
+    _, session, provider = place_service
+    import app.services.place_search_service as module
+
+    service = module.PlaceSearchService(session, provider, commit=False)
+    service.search("gyeongbokgung", "Mock Seoul")
+
+    assert session.commits == 0
+    assert session.flushes == 1
 
 
 def test_invalid_provider_result_is_rejected_and_rolls_back(place_service):

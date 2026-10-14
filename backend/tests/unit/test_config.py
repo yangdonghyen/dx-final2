@@ -9,6 +9,8 @@ def test_defaults_and_example_can_load():
     settings = Settings(_env_file=".env.example")
     assert settings.mysql_port == 3306
     assert settings.jwt_access_expire_minutes == 30
+    assert settings.ai_api_timeout_seconds == 180
+    assert settings.plan_regeneration_preview_ai_timeout_seconds == 240
     assert settings.jwt_refresh_expire_days == 14
     assert settings.cors_origins == []
     assert settings.jwt_secret_key.get_secret_value() == ""
@@ -68,7 +70,8 @@ def test_partial_mysql_configuration_fails_before_connecting(field):
 
 @pytest.mark.parametrize("field,value", [("mysql_port", 0), ("mysql_port", 65536),
     ("jwt_access_expire_minutes", 0), ("jwt_refresh_expire_days", -1),
-    ("external_api_timeout_seconds", 0), ("ai_api_timeout_seconds", -1)])
+    ("external_api_timeout_seconds", 0), ("ai_api_timeout_seconds", -1),
+    ("plan_regeneration_preview_ai_timeout_seconds", 0)])
 def test_invalid_numeric_configuration_is_rejected(field, value):
     with pytest.raises(ValidationError):
         Settings(**{field: value})

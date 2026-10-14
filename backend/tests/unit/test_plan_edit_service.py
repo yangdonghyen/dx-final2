@@ -36,10 +36,13 @@ class Places:
 class Validation:
     def __init__(self,s): self.s=s
     def validate(self,plan,trip): self.s.validations+=1; return []
+class NoMembers:
+    def __init__(self,s): pass
+    def get_member(self,trip_id,user_id): return None
 @pytest.fixture
 def edit(monkeypatch):
     import app.services.plan_edit_service as mod
-    for name, value in {"PlanRepository":Plans,"TripRepository":Trips,"PlanItemRepository":Items,"PlanRevisionRepository":Revisions,"PlaceRepository":Places,"PlanValidationService":Validation}.items(): monkeypatch.setattr(mod,name,value)
+    for name, value in {"PlanRepository":Plans,"TripRepository":Trips,"PlanItemRepository":Items,"PlanRevisionRepository":Revisions,"PlaceRepository":Places,"PlanValidationService":Validation,"TripCompanionRepository":NoMembers}.items(): monkeypatch.setattr(mod,name,value)
     session=Session(); return mod.PlanEditService(session),session
 
 def request(operation,**values): return PlanEditRequest(operation=operation,**values)

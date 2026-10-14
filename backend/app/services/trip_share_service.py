@@ -9,9 +9,10 @@ import secrets
 from datetime import datetime, timedelta
 
 from app.core.exceptions import AppError
+from app.repositories.plan_repository import PlanItemRepository, PlanRepository
 from app.repositories.trip_repository import TripCompanionRepository, TripRepository, TripSelectedPlaceRepository, TripShareLinkRepository
 from app.repositories.user_repository import UserRepository
-from app.schemas.trip import SharedTripCompanionResponse, SharedTripResponse, TripJoinResponse, TripShareLinkResponse
+from app.schemas.trip import SharedTripCompanionResponse, SharedTripDay, SharedTripResponse, SharedTripStop, TripJoinResponse, TripShareLinkResponse
 
 INVITE_LINK_LIFETIME = timedelta(days=7)
 # Shown when an invited user has no nickname; it describes the row, it is not a guessed name.
@@ -31,6 +32,8 @@ class TripShareService:
         self.trip_companions = TripCompanionRepository(session)
         self.selected_places = TripSelectedPlaceRepository(session)
         self.users = UserRepository(session)
+        self.plans = PlanRepository(session)
+        self.plan_items = PlanItemRepository(session)
 
     def _owned_trip(self, user_id, trip_id):
         trip = self.trips.get(trip_id)
@@ -62,7 +65,22 @@ class TripShareService:
         owner = self.users.get(trip.user_id)
         companions = [SharedTripCompanionResponse(name=row.name_snapshot, relation=row.relation_snapshot) for row in self.trip_companions.list(trip.trip_id)]
         places = [row.place.name for row in self.selected_places.list(trip.trip_id) if row.place is not None]
-        return SharedTripResponse(link_type=link.link_type, title=trip.title, destination=trip.destination, start_date=trip.start_date, end_date=trip.end_date, owner_nickname=owner.nickname if owner else None, companions=companions, selected_places=places)
+        return SharedTripResponse(link_type=link.link_type, title=trip.title, destination=trip.destination, start_date=trip.start_date, end_date=trip.end_date, owner_nickname=owner.nickname if owner else None, companions=companions, selected_places=places, days=self._shared_days(trip))
+
+    def _shared_days(self, trip):
+        """The saved itinerary as shown to people who open the link."""
+        plan = self.plans.get_by_trip_id(trip.trip_id)
+        if plan is None: return []
+        grouped = {}
+        for item in self.plan_items.list(plan.plan_id): grouped.setdefault(item.visit_date, []).append(item)
+        return [
+            SharedTripDay(
+                day=(visit_date - trip.start_date).days + 1 if trip.start_date else index,
+                visit_date=visit_date,
+                stops=[SharedTripStop(start_time=item.start_time.strftime("%H:%M") if item.start_time else None, title=item.title, item_type=item.item_type, note=getattr(item, "user_note", None)) for item in rows],
+            )
+            for index, (visit_date, rows) in enumerate(sorted(grouped.items()), 1)
+        ]
 
     def join(self, user, token):
         link, trip = self._active_link(token)

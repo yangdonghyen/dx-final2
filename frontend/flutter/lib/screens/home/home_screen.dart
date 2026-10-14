@@ -12,7 +12,9 @@ import '../../services/auth_service.dart';
 import '../../services/display_mode_service.dart';
 import '../../services/invite_link_service.dart';
 import '../../services/notification_service.dart';
+import '../../services/weather_notification_service.dart';
 import '../../services/weather_service.dart';
+import '../../app.dart' show appRouteObserver;
 import '../../services/youtube_bridge_service.dart';
 import '../../services/youtube_saved_discovery_service.dart';
 import '../discovery/camera_screen.dart';
@@ -37,7 +39,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver, RouteAware {
   int _tab = 0;
   bool _seniorMode = false;
   final ItinerarySession _itinerarySession = ItinerarySession();
@@ -54,9 +56,19 @@ class _HomeScreenState extends State<HomeScreen>
   bool _voiceOpeningResults = false;
   String _voiceTranscript = '';
   String _voiceMessage = '마이크를 준비하고 있어요.';
+  bool _youtubePlanOpening = false;
   bool _showRainAlert = false;
   Timer? _rainAlertTimer;
   StreamSubscription<Map<String, dynamic>>? _youtubeSubscription;
+  // YouTube pause events are received only while the Home tab is the visible
+  // page and the app is in the foreground (see _syncYoutubeBridge).
+  bool _routeVisible = true;
+  bool _appForeground = true;
+  bool _youtubeBridgeActive = false;
+  bool _routeObserved = false;
+  String? _lastYoutubeEventKey;
+  DateTime? _lastYoutubeEventAt;
+  BuildContext? _youtubeDialogContext;
   _HomeWeatherState _homeWeatherState = _HomeWeatherState.loading;
   WeatherData? _homeWeather;
 
@@ -87,11 +99,34 @@ class _HomeScreenState extends State<HomeScreen>
     });
     InviteLinkService.pendingToken.addListener(_openPendingInvite);
     WidgetsBinding.instance.addPostFrameCallback((_) => _openPendingInvite());
+    WeatherNotificationService.instance.rainPlanRequested.addListener(_openRequestedRainPlan);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openRequestedRainPlan());
     NotificationService.refreshFromTrips().catchError((_) {});
+    WidgetsBinding.instance.addObserver(this);
     _youtubeSubscription = YoutubeBridgeService.instance.events.listen((event) {
-      debugPrint('[YouTube Bridge] HOME received: $event');
-
       if (!mounted) return;
+      // A late frame from a socket that is closing must not pop up on
+      // another screen or after the app returns from the background.
+      if (!_youtubeBridgeActive) {
+        debugPrint('[YouTube Bridge] HOME ignored (home inactive) video_id=${event['video_id']}');
+        return;
+      }
+      final eventKey = event['event_id']?.toString() ??
+          '${event['video_id']}@${event['position_sec']}';
+      final now = DateTime.now();
+      if (eventKey == _lastYoutubeEventKey &&
+          _lastYoutubeEventAt != null &&
+          now.difference(_lastYoutubeEventAt!) < const Duration(seconds: 30)) {
+        debugPrint('[YouTube Bridge] HOME ignored (duplicate) key=$eventKey');
+        return;
+      }
+      _lastYoutubeEventKey = eventKey;
+      _lastYoutubeEventAt = now;
+      // A newer pause replaces the dialog of an older one.
+      final openDialog = _youtubeDialogContext;
+      if (openDialog != null && openDialog.mounted) {
+        Navigator.of(openDialog).pop();
+      }
 
       final positionSec = event['position_sec'] is int
           ? event['position_sec'] as int
@@ -106,11 +141,20 @@ class _HomeScreenState extends State<HomeScreen>
       final channelTitle = event['channel_title']?.toString() ?? '';
       final thumbnailUrl = event['thumbnail_url']?.toString();
 
-      showDialog<void>(
+      debugPrint(
+        '[YouTube Bridge] VIDEO_INFO_DISPLAYED event_id=${event['event_id']} '
+        'video_id=${event['video_id']} position_sec=$positionSec',
+      );
+      final dialog = showDialog<void>(
         context: context,
         barrierDismissible: true,
         builder: (dialogContext) {
-          return AlertDialog(
+          _youtubeDialogContext = dialogContext;
+          // Saving resolves the video's region on the server (several seconds),
+          // so the buttons show progress and lock until it answers.
+          String? busy;
+          String? failure;
+          return StatefulBuilder(builder: (_, setDialogState) => AlertDialog(
             insetPadding: const EdgeInsets.symmetric(
               horizontal: 24,
               vertical: 24,
@@ -199,6 +243,13 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                     ],
                   ),
+                  if (failure != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      failure!,
+                      style: const TextStyle(fontSize: 15, color: Color(0xFFDC2626)),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -208,7 +259,11 @@ class _HomeScreenState extends State<HomeScreen>
                 children: [
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: () async {
+                      onPressed: busy != null ? null : () async {
+                        setDialogState(() {
+                          busy = 'save';
+                          failure = null;
+                        });
                         try {
                           final saved = await YouTubeSavedDiscoveryService()
                               .save(event);
@@ -226,17 +281,19 @@ class _HomeScreenState extends State<HomeScreen>
                           );
                         } catch (error) {
                           debugPrint('[YouTube Bridge] SAVE failed: $error');
-
-                          if (!mounted) return;
-
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('저장하지 못했어요: $error')),
-                          );
+                          if (!dialogContext.mounted) return;
+                          // Shown in the dialog: a SnackBar would sit behind it.
+                          setDialogState(() {
+                            busy = null;
+                            failure = '저장하지 못했어요. 잠시 후 다시 눌러주세요.';
+                          });
                         }
                       },
-                      icon: const Icon(Icons.bookmark_border),
-                      label: const Text(
-                        '저장하기',
+                      icon: busy == 'save'
+                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.bookmark_border),
+                      label: Text(
+                        busy == 'save' ? '저장 중…' : '저장하기',
                         style: TextStyle(
                           fontSize: 17,
                           fontWeight: FontWeight.w600,
@@ -250,12 +307,58 @@ class _HomeScreenState extends State<HomeScreen>
                   const SizedBox(width: 12),
                   Expanded(
                     child: FilledButton.icon(
-                      onPressed: () {
+                      onPressed: busy != null ? null : () async {
+                        if (_youtubePlanOpening) return;
+                        _youtubePlanOpening = true;
+                        setDialogState(() {
+                          busy = 'plan';
+                          failure = null;
+                        });
                         debugPrint('[YouTube Bridge] PLAN requested: $event');
+                        // 저장(서버가 같은 영상·위치는 중복 저장하지 않음)하면서 서버가
+                        // 영상으로 확인한 지역을 받아, 여행 만들기의 날짜 선택부터 엽니다.
+                        try {
+                          final saved = await YouTubeSavedDiscoveryService()
+                              .save(event);
+                          if (!mounted || !dialogContext.mounted) return;
+                          Navigator.of(dialogContext).pop();
+                          final destination = saved.destinationName?.trim();
+                          final known =
+                              destination != null && destination.isNotEmpty;
+                          debugPrint(
+                            '[YouTube Bridge] PLAN destination=${known ? destination : 'unknown'}',
+                          );
+                          _push(
+                            TripPlacesScreen(
+                              destination: known ? destination : null,
+                              initialPlaces: {known ? destination : saved.title},
+                            ),
+                          );
+                          if (!known) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  '영상에서 지역을 확인하지 못했어요. 여행지는 직접 입력해주세요.',
+                                ),
+                              ),
+                            );
+                          }
+                        } catch (error) {
+                          debugPrint('[YouTube Bridge] PLAN failed: $error');
+                          if (!dialogContext.mounted) return;
+                          setDialogState(() {
+                            busy = null;
+                            failure = '여행 계획을 시작하지 못했어요. 다시 눌러주세요.';
+                          });
+                        } finally {
+                          _youtubePlanOpening = false;
+                        }
                       },
-                      icon: const Icon(Icons.route),
-                      label: const Text(
-                        '여행 계획하기',
+                      icon: busy == 'plan'
+                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.route),
+                      label: Text(
+                        busy == 'plan' ? '여행지 확인 중…' : '여행 계획하기',
                         style: TextStyle(
                           fontSize: 17,
                           fontWeight: FontWeight.w600,
@@ -269,22 +372,89 @@ class _HomeScreenState extends State<HomeScreen>
                 ],
               ),
             ],
-          );
+          ));
         },
       );
+      dialog.whenComplete(() {
+        if (_youtubeDialogContext?.mounted != true) _youtubeDialogContext = null;
+      });
     });
 
-    YoutubeBridgeService.instance.start();
+    _syncYoutubeBridge();
     ActiveTripService.revision.addListener(_refreshActiveTrip);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (!_routeObserved && route is PageRoute) {
+      appRouteObserver.subscribe(this, route);
+      _routeObserved = true;
+    }
+  }
+
+  // Another page pushed over Home, or Home popped/replaced: stop receiving.
+  @override
+  void didPushNext() => _setRouteVisible(false);
+
+  @override
+  void didPopNext() => _setRouteVisible(true);
+
+  @override
+  void didPop() => _setRouteVisible(false);
+
+  void _setRouteVisible(bool visible) {
+    _routeVisible = visible;
+    _syncYoutubeBridge();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // `inactive` (permission sheets, notification shade) keeps the socket.
+    if (state == AppLifecycleState.resumed) {
+      _appForeground = true;
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _appForeground = false;
+    } else {
+      return;
+    }
+    _syncYoutubeBridge();
+  }
+
+  /// Starts or stops the YouTube bridge so it runs only while the Home tab is
+  /// visible in the foreground.  Events sent while it is stopped are never
+  /// replayed, so an old pause cannot appear after returning to Home.
+  void _syncYoutubeBridge() {
+    final wanted = mounted && _tab == 0 && _routeVisible && _appForeground;
+    if (wanted == _youtubeBridgeActive) return;
+    _youtubeBridgeActive = wanted;
+    debugPrint(
+      '[YouTube Bridge] HOME ${wanted ? 'active' : 'inactive'} '
+      'tab=$_tab route_visible=$_routeVisible foreground=$_appForeground',
+    );
+    if (wanted) {
+      unawaited(YoutubeBridgeService.instance.start());
+    } else {
+      unawaited(YoutubeBridgeService.instance.stop());
+    }
   }
 
   @override
   void dispose() {
     _rainAlertTimer?.cancel();
     _youtubeSubscription?.cancel();
-    unawaited(YoutubeBridgeService.instance.stop());
+    WidgetsBinding.instance.removeObserver(this);
+    if (_routeObserved) appRouteObserver.unsubscribe(this);
+    if (_youtubeBridgeActive) {
+      _youtubeBridgeActive = false;
+      unawaited(YoutubeBridgeService.instance.stop());
+    }
     NotificationService.readIds.removeListener(_refreshNotificationBadge);
     InviteLinkService.pendingToken.removeListener(_openPendingInvite);
+    WeatherNotificationService.instance.rainPlanRequested.removeListener(_openRequestedRainPlan);
     ActiveTripService.revision.removeListener(_refreshActiveTrip);
     _voiceSession++;
     _speech.cancel();
@@ -675,6 +845,14 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
+  /// The phone's rain notification was tapped: same screen as the in-app alert.
+  void _openRequestedRainPlan() {
+    final request = WeatherNotificationService.instance.rainPlanRequested;
+    if (!mounted || !request.value) return;
+    request.value = false;
+    _openRainPlan();
+  }
+
   /// 비 알림을 누르면 비 오는 날에 맞춘 날씨·일정 화면을 엽니다.
   void _openRainPlan() {
     _dismissRainAlert();
@@ -683,6 +861,12 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
+    // The tab changes in several places; follow it after this frame.
+    if ((_tab == 0 && _routeVisible && _appForeground) != _youtubeBridgeActive) {
+      scheduleMicrotask(() {
+        if (mounted) _syncYoutubeBridge();
+      });
+    }
     final pages = <Widget>[
       _seniorMode ? _homeBody() : _basicHomeBody(),
       MapScreen(onBack: () => setState(() => _tab = 0)),

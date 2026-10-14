@@ -21,6 +21,7 @@ class GeneratedPlanItem {
     this.transportModeFromPrevious,
     this.travelMinutesFromPrevious,
     this.travelStatus,
+    this.note,
   });
 
   final int itemId;
@@ -46,6 +47,9 @@ class GeneratedPlanItem {
 
   /// KNOWN, UNKNOWN or NONE. Null when the server did not send it.
   final String? travelStatus;
+
+  /// The traveler's own description of this stop (UPDATE_ITEM), or null.
+  final String? note;
 
   /// The label to show above this item, or null to show nothing.
   String? get travelLabel => planTravelLabel(
@@ -74,6 +78,7 @@ class GeneratedPlanItem {
         json['travel_minutes_from_previous'],
       ),
       travelStatus: json['travel_status']?.toString(),
+      note: json['note']?.toString(),
     );
   }
 }
@@ -243,6 +248,10 @@ class PlanRegenerationApplyResult {
 /// (AI_API_TIMEOUT_SECONDS=180 each), so wait 4 x 180s plus a 60s margin.
 const planAiRequestTimeout = Duration(seconds: 780);
 
+/// Preview calls alone allow their 240-second Ollama ceiling for up to four
+/// bounded provider calls plus a 60-second transport margin.
+const previewAiRequestTimeout = Duration(seconds: 1020);
+
 /// Whether a trip has a saved plan, is still generating one, or has none.
 enum TripPlanState { ready, generating, missing }
 
@@ -284,16 +293,43 @@ class PlanService {
   /// server then plans from citywide candidates of that destination.
   Future<GeneratedPlan> generate(
     int tripId, [
-    List<int> selectedPlaceIds = const <int>[],
+    List<int>? selectedPlaceIds,
   ]) async {
     final response = await _apiClient.post(
       '/api/v1/trips/$tripId/plans/generate',
       accessToken: _accessToken,
       timeout: planAiRequestTimeout,
-      body: {'selected_place_ids': selectedPlaceIds},
+      // Omitting the field preserves anchors already stored on a trip. An
+      // explicit empty list is reserved for a new citywide plan.
+      body: {
+        'selected_place_ids': ?selectedPlaceIds,
+      },
     );
 
     return GeneratedPlan.fromJson(response);
+  }
+
+  /// POST /plans/{planId}/edit UPDATE_ITEM: start time (duration kept), a
+  /// rest's title and the traveler's note.  Saved on the server, so the
+  /// change survives reopening and companions see it.
+  Future<void> updateItem(
+    int planId,
+    int itemId, {
+    String? startTime,
+    String? title,
+    String? note,
+  }) async {
+    await _apiClient.post(
+      '/api/v1/plans/$planId/edit',
+      accessToken: _accessToken,
+      body: {
+        'operation': 'UPDATE_ITEM',
+        'item_id': itemId,
+        'start_time': ?startTime,
+        'title': ?title,
+        'note': ?note,
+      },
+    );
   }
 
   Future<PlanRegenerationPreview> createRegenerationPreview(
@@ -305,7 +341,7 @@ class PlanService {
     final response = await _apiClient.post(
       '/api/v1/plans/$planId/regeneration-previews',
       accessToken: _accessToken,
-      timeout: planAiRequestTimeout,
+      timeout: previewAiRequestTimeout,
       body: {
         'reason': reason,
         'instruction': instruction,
@@ -399,9 +435,12 @@ class PlanService {
   ///
   /// Rethrows the original error when the server has no plan for the trip
   /// and is not generating one, so the caller can offer a retry.
-  Future<GeneratedPlan> generateOrRecover(int tripId) async {
+  Future<GeneratedPlan> generateOrRecover(
+    int tripId, [
+    List<int>? selectedPlaceIds,
+  ]) async {
     try {
-      return await generate(tripId);
+      return await generate(tripId, selectedPlaceIds);
     } catch (error) {
       if (!_serverMayHavePlan(error)) rethrow;
       final planId = existingPlanId(error);
@@ -479,6 +518,11 @@ String planErrorMessage(Object error) {
         '기존 일정이 변경되어 수정안을 적용할 수 없어요. 최신 일정에서 다시 만들어 주세요.',
     'PREVIEW_STALE': '기존 일정이 변경되어 수정안을 적용할 수 없어요. 최신 일정에서 다시 만들어 주세요.',
     'PREVIEW_NOT_FOUND': '수정안을 찾을 수 없어요. 기존 일정은 유지됩니다.',
+    'EDIT_TIME_OVERLAP': '앞뒤 일정과 시간이 겹쳐요. 다른 시간을 입력해 주세요.',
+    'PLACE_TITLE_LOCKED': '방문 장소 이름은 바꿀 수 없어요. 장소를 바꾸려면 장소 바꾸기를 이용해 주세요.',
+    'WEATHER_NO_ALTERNATIVE':
+        '지금 일정에서 날씨에 맞춰 바꿀 실내 장소를 찾지 못했어요. 기존 일정은 그대로 유지됩니다.',
+    'PREVIEW_NO_CHANGES': '바꿀 수 있는 일정을 찾지 못했어요. 기존 일정은 그대로 유지됩니다.',
   };
   const validationMessages = <String, String>{
     'TIME_CONFLICT':
@@ -490,6 +534,20 @@ String planErrorMessage(Object error) {
     'AI_SCHEMA_VALIDATION_FAILED':
         '\uC218\uC815\uC548\uC758 \uC7A5\uC18C \uC815\uBCF4\uB97C \uAC80\uC99D\uD560 \uC218 \uC5C6\uC5B4 \uAE30\uC874 \uC77C\uC815\uC744 \uC720\uC9C0\uD569\uB2C8\uB2E4.',
   };
+  if (code == 'ROUTE_TIME_CONFLICT') {
+    final details = detail is Map<String, dynamic> ? detail['details'] : null;
+    final conflict = details is Map ? details['conflict']?.toString() : null;
+    final day = details is Map ? details['visit_date']?.toString() : null;
+    final when = day == null ? '' : '$day 일정의 ';
+    if (conflict == 'MEAL_WINDOW') {
+      return '$when실제 이동시간을 반영하면 식사 시간에 맞출 수 없어 수정안을 만들지 못했어요. '
+          '기존 일정은 그대로 유지됩니다. 다른 사유를 골라 다시 시도해 주세요.';
+    }
+    if (conflict == 'DAY_END') {
+      return '$when실제 이동시간을 반영하면 하루 일정이 너무 늦게 끝나 수정안을 만들지 못했어요. '
+          '기존 일정은 그대로 유지됩니다.';
+    }
+  }
   if (code != null && validationMessages.containsKey(code)) {
     return validationMessages[code]!;
   }

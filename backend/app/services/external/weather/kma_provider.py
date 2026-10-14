@@ -22,6 +22,16 @@ except ZoneInfoNotFoundError:
     # daylight-saving transition, so this preserves the required KST behavior.
     SEOUL = timezone(timedelta(hours=9), name="Asia/Seoul")
 _BASE_HOURS = (2, 5, 8, 11, 14, 17, 20, 23)
+# resultCode 03 (NO_DATA): the newest issue is not served yet even after the
+# 30-minute lag.  Seen on 2026-10-14: 14:00 and 11:00 both NO_DATA while 08:00
+# answered, so up to three earlier issues (3 hours apart) are tried.
+KMA_NO_DATA = "03"
+PREVIOUS_ISSUE = timedelta(hours=3)
+NO_DATA_FALLBACK_ISSUES = 3
+
+
+class _NoData(Exception):
+    pass
 
 
 def latest_short_forecast_base(now: datetime | None = None) -> datetime:
@@ -81,6 +91,15 @@ class KmaProvider:
         if not self.base_url:
             raise AppError("KMA_API_BASE_URL_NOT_CONFIGURED", "KMA API base URL is not configured", 503)
         base_at = latest_short_forecast_base(now)
+        for step in range(NO_DATA_FALLBACK_ISSUES + 1):
+            issue = base_at - PREVIOUS_ISSUE * step
+            try:
+                return KmaForecast(base_at=issue, items=self._items(nx, ny, issue))
+            except _NoData:
+                continue
+        raise AppError("KMA_NO_DATA", "KMA has no forecast for this time yet", 502)
+
+    def _items(self, nx: int, ny: int, base_at: datetime) -> list[dict]:
         key_name = "authKey" if "apihub.kma.go.kr" in self.base_url else "serviceKey"
         params = {
             key_name: self.api_key, "pageNo": 1, "numOfRows": 1000,
@@ -105,13 +124,15 @@ class KmaProvider:
             payload = json.loads(body.decode("utf-8"))
             response = payload["response"]
             header = response["header"]
+            if str(header.get("resultCode")) == KMA_NO_DATA:
+                raise _NoData
             if str(header.get("resultCode")) != "00":
                 raise AppError("KMA_RESULT_ERROR", "KMA forecast request was rejected", 502)
             items = response["body"]["items"]["item"]
             if not isinstance(items, list):
                 raise ValueError
-        except AppError:
+        except (AppError, _NoData):
             raise
         except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             raise AppError("KMA_MALFORMED_RESPONSE", "KMA returned an invalid forecast response", 502) from None
-        return KmaForecast(base_at=base_at, items=items)
+        return items

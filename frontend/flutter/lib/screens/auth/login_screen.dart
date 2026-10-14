@@ -1,7 +1,12 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
 import '../../core/layout/app_responsive.dart';
 import '../../core/theme/app_theme.dart';
+import '../../data/api/api_client.dart';
 import '../../widgets/primary_button.dart';
 import '../../services/auth_service.dart';
 import '../home/home_screen.dart';
@@ -20,6 +25,33 @@ class _S extends State<LoginScreen> {
   bool loggingIn = false;
   bool autoLogin = false;
   final AuthService authService = AuthService();
+  bool resuming = AuthSession.autoLogin && (AuthSession.refreshToken?.isNotEmpty ?? false);
+
+  @override
+  void initState() {
+    super.initState();
+    if (resuming) _resume();
+  }
+
+  Future<void> _resume() async {
+    final ok = await authService.resumeSession();
+    if (!mounted) return;
+    if (ok) {
+      _goHome();
+    } else {
+      setState(() => resuming = false);
+    }
+  }
+
+  /// Every successful login remembers the "자동 로그인" choice, then opens Home.
+  Future<void> _goHome() async {
+    if (!resuming) await AuthSession.setAutoLogin(autoLogin);
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => const HomeScreen()),
+    );
+  }
 
   Future<void> loginWithKakao() async {
     if (loggingIn) return;
@@ -34,15 +66,12 @@ class _S extends State<LoginScreen> {
 
       if (!mounted) return;
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-      );
+      await _goHome();
     } catch (e) {
       if (!mounted) return;
 
       setState(() {
-        notice = '서버 로그인에 실패했습니다.';
+        notice = _loginFailureNotice('kakao', e, '서버 로그인에 실패했습니다.');
         loggingIn = false;
       });
     }
@@ -57,11 +86,9 @@ class _S extends State<LoginScreen> {
     try {
       await authService.loginWithNaver();
       if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-      );
+      await _goHome();
     } on PlatformException catch (error) {
+      debugPrint('[Auth] naver step=sdk code=${error.code}');
       if (!mounted) return;
       setState(() {
         notice = error.code == 'NAVER_LOGIN_CANCELLED'
@@ -69,10 +96,10 @@ class _S extends State<LoginScreen> {
             : '네이버 로그인에 실패했습니다.';
         loggingIn = false;
       });
-    } catch (_) {
+    } catch (error) {
       if (!mounted) return;
       setState(() {
-        notice = '네이버 로그인에 실패했습니다.';
+        notice = _loginFailureNotice('naver', error, '네이버 로그인에 실패했습니다.');
         loggingIn = false;
       });
     }
@@ -101,15 +128,18 @@ class _S extends State<LoginScreen> {
 
       if (!mounted) return;
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-      );
-    } catch (_) {
+      await _goHome();
+    } catch (error) {
       if (!mounted) return;
 
       setState(() {
-        notice = '아이디 또는 비밀번호가 올바르지 않습니다.';
+        notice = error is ApiException && error.statusCode == 401
+            ? '아이디 또는 비밀번호가 올바르지 않습니다.'
+            : _loginFailureNotice(
+                'local',
+                error,
+                '아이디 또는 비밀번호가 올바르지 않습니다.',
+              );
         loggingIn = false;
       });
     }
@@ -118,7 +148,8 @@ class _S extends State<LoginScreen> {
   @override
   Widget build(BuildContext c) => Scaffold(
     backgroundColor: Colors.white,
-    body: SafeArea(
+    // Auto login: keep the form hidden while the saved session is checked.
+    body: resuming ? const Center(child: CircularProgressIndicator()) : SafeArea(
       child: ListView(
         padding: EdgeInsets.fromLTRB(ResponsiveLayout.pageHorizontal(c), 48, ResponsiveLayout.pageHorizontal(c), 28),
         children: [
@@ -270,4 +301,33 @@ class _S extends State<LoginScreen> {
       ),
     ),
   );
+}
+
+/// Logs why a server login failed (no tokens or bodies) and picks the notice.
+String _loginFailureNotice(String provider, Object error, String fallback) {
+  final String kind;
+  String notice = fallback;
+  if (error is SocketException || error is http.ClientException) {
+    kind = 'network';
+    notice = '서버에 연결하지 못했습니다. API 주소와 네트워크를 확인해주세요.';
+  } else if (error is TimeoutException) {
+    kind = 'timeout';
+    notice = '서버 응답이 지연되고 있습니다. 잠시 후 다시 시도해주세요.';
+  } else if (error is ApiException) {
+    final status = error.statusCode;
+    kind = status == 401 || status == 403
+        ? 'auth_rejected status=$status'
+        : status >= 500
+        ? 'server_error status=$status'
+        : 'http status=$status';
+  } else if (error is FormatException) {
+    kind = 'bad_response';
+  } else {
+    kind = 'unexpected type=${error.runtimeType}';
+  }
+  debugPrint(
+    '[Auth] $provider step=server_login failed kind=$kind '
+    'base_url=${ApiClient().baseUrl}',
+  );
+  return notice;
 }

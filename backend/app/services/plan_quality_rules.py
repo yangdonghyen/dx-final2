@@ -393,6 +393,29 @@ def _sight_type(place) -> str:
     return (_category(place).split(">")[-1] or "").strip()
 
 
+# One activity type (the last Kakao category segment) above this share of at
+# least SIGHT_TYPE_MIN_SIGHTS sights is a skewed pool: most days would get
+# the same kind of activity.  A share, not a cap, so real supply still wins.
+SIGHT_TYPE_MAX_SHARE = 0.6
+SIGHT_TYPE_MIN_SIGHTS = 3
+
+
+def sight_type_counts(sights) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for place in sights:
+        kind = _sight_type(place) or "UNKNOWN"
+        counts[kind] = counts.get(kind, 0) + 1
+    return dict(sorted(counts.items(), key=lambda row: (-row[1], row[0])))
+
+
+def sight_types_skewed(sights) -> bool:
+    """Whether one activity type dominates these non-food candidates."""
+    sights = list(sights)
+    if len(sights) < SIGHT_TYPE_MIN_SIGHTS:
+        return False
+    return max(sight_type_counts(sights).values()) / len(sights) > SIGHT_TYPE_MAX_SHARE
+
+
 def candidate_supply(places, trip_days: int, area_meters: int = CANDIDATE_AREA_METERS, targets: dict | None = None) -> dict:
     """How much real sightseeing the candidate pool can carry, before generation.
 
@@ -427,12 +450,15 @@ def candidate_supply(places, trip_days: int, area_meters: int = CANDIDATE_AREA_M
         problems.append("RESTAURANTS_FEWER_THAN_MEALS")
     if sights and len(sights) - sum(len(area) for area in areas):
         problems.append("SIGHTS_WITHOUT_COORDINATES")
+    if sight_types_skewed(sights):
+        problems.append("LOW_SIGHT_TYPE_DIVERSITY")
     return {
         "total": len(places),
         "sights": len(sights),
         "restaurants": restaurants,
         "cafes": sum(is_cafe(place) for place in places),
         "sight_types": sorted({_sight_type(place) for place in sights} - {""}),
+        "sight_type_counts": sight_type_counts(sights),
         "areas": len(areas),
         "area_sizes": [len(area) for area in areas],
         "trip_days": trip_days,

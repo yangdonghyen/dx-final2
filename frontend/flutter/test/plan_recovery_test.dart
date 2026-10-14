@@ -107,6 +107,38 @@ void main() {
     ]);
   });
 
+  test('sends the verified selected place IDs on the first generation call',
+      () async {
+    final calls = <String>[];
+    late Map<String, dynamic> requestBody;
+    final service = serviceWith((request) async {
+      if (request.method == 'POST') {
+        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return ok(planJson(18));
+      }
+      throw StateError('Unexpected recovery request');
+    }, calls);
+
+    final plan = await service.generateOrRecover(68, const [11, 22]);
+
+    expect(plan.planId, 18);
+    expect(requestBody, {'selected_place_ids': [11, 22]});
+    expect(calls, ['POST /api/v1/trips/68/plans/generate']);
+  });
+
+  test('omits selected_place_ids when the caller has no new selection',
+      () async {
+    late Map<String, dynamic> requestBody;
+    final service = serviceWith((request) async {
+      requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+      return ok(planJson(18));
+    }, <String>[]);
+
+    await service.generateOrRecover(68);
+
+    expect(requestBody, isEmpty);
+  });
+
   test('409 from an older server without plan_id falls back to the trip '
       'lookup', () async {
     final calls = <String>[];

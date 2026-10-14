@@ -75,7 +75,7 @@ def _generation(draft: GeneratedPlanDraft):
         route_provider=None,
         _input=lambda _trip: ({}, {}, [], [], {}, [], set(), {}),
         _normalize_draft_dates=lambda value, _trip: value,
-        _prepare_draft=lambda value, _places, _anchors, _trip: value,
+        _prepare_draft=lambda value, _places, _anchors, _trip, _preferences=None: value,
         _validate_draft=validate,
         _validate_temporal_draft=lambda *_args: None,
         _validate_route_timing=lambda *_args: None,

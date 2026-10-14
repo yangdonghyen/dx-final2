@@ -204,7 +204,7 @@ def test_evening_schedule_with_room_for_a_meal_reports_missing_dinner():
     assert "MISSING_DINNER" in [finding.code for finding in review_plan([("day", day_stops)], PlanQualityRules())]
 
 
-def test_required_lunch_blocks_plan_completion_when_no_safe_restaurant_exists(service):
+def test_missing_required_lunch_is_reported_without_blocking_the_plan(service):
     generator, session, _, _ = service
     trip = session.trips[1]
     museum = sight(107, "Museum")
@@ -213,10 +213,10 @@ def test_required_lunch_blocks_plan_completion_when_no_safe_restaurant_exists(se
         (PlanDraftItem(2, "REST", "Rest", None, "12:00", "13:00", "model"), time(12), time(13)),
     ]
 
-    with pytest.raises(AppError) as error:
-        generator._require_complete_meal_schedule([(trip.start_date, rows)], {107: museum})
+    codes = generator._require_complete_meal_schedule([(trip.start_date, rows)], {107: museum})
 
-    assert error.value.code == "MEAL_SCHEDULE_INCOMPLETE"
+    assert codes == ["MISSING_LUNCH"]
+    assert rows[1][0].item_type == "REST"  # the rest is never relabelled as a meal
 
 
 def test_short_day_does_not_block_for_a_meal_that_is_not_required(service):
@@ -323,9 +323,7 @@ def test_slow_rest_gap_keeps_incomplete_schedule_when_a_route_fact_is_unknown(se
     rows = [(item, time.fromisoformat(item.start_time), time.fromisoformat(item.end_time)) for item in prepared.days[0].items]
 
     assert all(item.place_id != 105 for item in prepared.days[0].items)
-    with pytest.raises(AppError, match="Required meal slots") as error:
-        generator._require_complete_meal_schedule([(trip.start_date, rows)], places)
-    assert error.value.code == "MEAL_SCHEDULE_INCOMPLETE"
+    assert generator._require_complete_meal_schedule([(trip.start_date, rows)], places) == ["MISSING_LUNCH"]
 
 
 def test_slow_rest_gap_does_not_use_a_restaurant_closed_for_recovered_lunch(service):

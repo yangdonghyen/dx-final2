@@ -56,6 +56,8 @@ def service():
     service.trip_companions = TripCompanions([SimpleNamespace(trip_id=10, member_user_id=None, name_snapshot="어머니", relation_snapshot="MOTHER")])
     service.selected_places = SelectedPlaces()
     service.users = Users({1: owner, 2: friend})
+    service.plans = SimpleNamespace(get_by_trip_id=lambda trip_id: None)  # no itinerary unless a test adds one
+    service.plan_items = SimpleNamespace(list=lambda plan_id: [])
     service.owner, service.friend = owner, friend
     return service
 
@@ -150,3 +152,21 @@ def test_view_page_has_no_app_join_button(service):
     token = token_of(service.create_link(1, 10, "VIEW", "http://host").url)
     page = render_shared_trip_page(service.shared_trip(token), token)
     assert "bogogago://" not in page
+
+
+def test_shared_link_shows_the_saved_itinerary(service):
+    from datetime import date, time
+    from app.api.v1.trips import render_shared_trip_page
+
+    service.trips.trips[10].start_date = date(2026, 9, 19)
+    service.plans = SimpleNamespace(get_by_trip_id=lambda trip_id: SimpleNamespace(plan_id=46))
+    service.plan_items = SimpleNamespace(list=lambda plan_id: [
+        SimpleNamespace(visit_date=date(2026, 9, 19), start_time=time(9), title="정동진 해변", item_type="PLACE", user_note=None),
+        SimpleNamespace(visit_date=date(2026, 9, 19), start_time=time(14, 30), title="하슬라아트월드", item_type="PLACE", user_note="노을 사진"),
+    ])
+    token = token_of(service.create_link(1, 10, "VIEW", "http://host").url)
+    shared = service.shared_trip(token)
+    assert [(stop.start_time, stop.title) for stop in shared.days[0].stops] == [("09:00", "정동진 해변"), ("14:30", "하슬라아트월드")]
+    page = render_shared_trip_page(shared, token)
+    assert "DAY 1 · 9월 19일" in page and "하슬라아트월드" in page and "노을 사진" in page
+

@@ -831,6 +831,7 @@ CREATE TABLE plan_items (
     travel_distance_meters_from_previous INT UNSIGNED NULL,
 
     recommendation_reason TEXT NULL,
+    user_note VARCHAR(255) NULL,
 
     validation_status ENUM(
         'VALID','WARNING','UNKNOWN'

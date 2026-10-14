@@ -127,9 +127,35 @@ def test_rejects_sequence_that_is_not_in_chronological_time_order():
         {"sequence": 2, "item_type": "REST", "title": "저녁 전 휴식", "place_id": None, "start_time": "18:00", "end_time": "19:30", "recommendation_reason": "휴식 선호"},
         {"sequence": 3, "item_type": "FREE_TIME", "title": "오후 일정", "place_id": None, "start_time": "14:00", "end_time": "15:00", "recommendation_reason": "여유 일정"},
     ]
-    provider, _ = _provider(_plan([{"visit_date": "2026-10-10", "items": items}]))
+    provider, client = _provider(_plan([{"visit_date": "2026-10-10", "items": items}]))
     with pytest.raises(AppError) as error:
         provider.generate_plan(*_inputs())
+    assert error.value.code == "EXAONE_INVALID_RESPONSE"
+
+
+def test_preview_regeneration_defers_only_forward_time_overlap_and_records_context(caplog):
+    items = [
+        {"sequence": 1, "item_type": "PLACE", "title": "부산 미술관", "place_id": 101, "start_time": "10:00", "end_time": "11:00"},
+        {"sequence": 2, "item_type": "REST", "title": "휴식", "place_id": None, "start_time": "10:30", "end_time": "11:30"},
+    ]
+    provider, client = _provider(_plan([{"visit_date": "2026-10-10", "items": items}]))
+    with caplog.at_level(logging.INFO):
+        draft = provider.regenerate_preview_plan(*_inputs(), "USER_FATIGUE", "휴식을 늘려주세요")
+
+    assert [item.start_time for item in draft.days[0].items] == ["10:00", "10:30"]
+    assert len(client.calls) == 1
+    message = next(record.getMessage() for record in caplog.records if "exaone_time_overlap_detected" in record.getMessage())
+    assert "visit_date" in message and "sequence" in message and "place_id" in message and "is_anchor" in message
+
+
+def test_preview_regeneration_rejects_an_out_of_order_time_even_when_overlap_repair_is_enabled():
+    items = [
+        {"sequence": 1, "item_type": "PLACE", "title": "부산 미술관", "place_id": 101, "start_time": "11:00", "end_time": "12:00"},
+        {"sequence": 2, "item_type": "REST", "title": "휴식", "place_id": None, "start_time": "10:30", "end_time": "11:30"},
+    ]
+    provider, _ = _provider(_plan([{"visit_date": "2026-10-10", "items": items}]))
+    with pytest.raises(AppError) as error:
+        provider.regenerate_preview_plan(*_inputs(), "USER_FATIGUE", "휴식을 늘려주세요")
     assert error.value.code == "EXAONE_INVALID_RESPONSE"
 
 
@@ -161,6 +187,84 @@ def test_canonicalizes_candidate_name_and_item_type_without_trusting_model_title
     draft = provider.generate_plan(trip, preferences, companions, interests, preference_context, places)
 
     assert (draft.days[0].items[0].title, draft.days[0].items[0].item_type) == ("광안리해수욕장", "PLACE")
+
+
+def test_removes_only_an_explicit_non_place_id_and_avoids_a_retry(caplog):
+    response = _plan([{"visit_date": "2026-10-10", "items": [
+        {"sequence": 1, "item_type": "PLACE", "title": "부산 미술관", "place_id": 101, "start_time": "10:00", "end_time": "11:00"},
+        {"sequence": 2, "item_type": "REST", "title": "휴식 시간", "place_id": 101, "start_time": "11:00", "end_time": "12:00"},
+    ]}])
+    provider, client = _provider(response)
+
+    with caplog.at_level(logging.INFO):
+        draft = provider.generate_plan(*_inputs())
+
+    assert draft.days[0].items[1].place_id is None
+    assert draft.days[0].items[1].item_type == "REST"
+    assert len(client.calls) == 1
+    assert any("exaone_non_place_id_removed" in record.getMessage() for record in caplog.records)
+
+
+def test_keeps_a_real_candidate_id_by_correcting_its_non_place_type():
+    response = _plan([{"visit_date": "2026-10-10", "items": [
+        {"sequence": 1, "item_type": "FREE_TIME", "title": "부산 미술관", "place_id": 101, "start_time": "10:00", "end_time": "11:00"},
+    ]}])
+    provider, _ = _provider(response)
+
+    draft = provider.generate_plan(*_inputs())
+
+    assert (draft.days[0].items[0].place_id, draft.days[0].items[0].item_type) == (101, "PLACE")
+
+
+def test_corrects_verified_rest_visit_id_before_canonicalizing_its_type(caplog):
+    trip, preferences, companions, interests, context, places = _inputs()
+    places[0].update({"name": "Seaside Drive", "category": "AT4"})
+    places[1].update({
+        "name": "Quiet Museum", "category": "AT4",
+        "region": trip["destination"], "address": trip["destination"],
+    })
+    response = _plan([{"visit_date": "2026-10-10", "items": [
+        {"sequence": 1, "item_type": "REST", "title": "Quiet Museum", "place_id": 101, "start_time": "10:00", "end_time": "11:00"},
+    ]}])
+    provider, client = _provider(response)
+
+    with caplog.at_level(logging.INFO):
+        draft = provider.generate_plan(trip, preferences, companions, interests, context, places)
+
+    item = draft.days[0].items[0]
+    assert (item.place_id, item.title, item.item_type) == (202, "Quiet Museum", "PLACE")
+    assert len(client.calls) == 1
+    message = next(record.getMessage() for record in caplog.records if "exaone_non_place_id_type_corrected" in record.getMessage())
+    assert "model_place_id" in message and "resolved_place_id" in message and "candidate_name" in message
+
+
+def test_rejects_non_candidate_rest_id_with_structured_diagnostic(caplog):
+    response = _plan([{"visit_date": "2026-10-10", "items": [
+        {"sequence": 1, "item_type": "REST", "title": "Unknown rest", "place_id": 999, "start_time": "10:00", "end_time": "11:00"},
+    ]}])
+    provider, _ = _provider(response)
+
+    with caplog.at_level(logging.INFO), pytest.raises(AppError) as error:
+        provider.generate_plan(*_inputs())
+
+    assert error.value.code == "EXAONE_INVALID_RESPONSE"
+    message = next(record.getMessage() for record in caplog.records if "exaone_place_id_rejected" in record.getMessage())
+    assert "candidate_in_pool" in message and "title" in message and "model_place_id" in message
+
+
+@pytest.mark.parametrize("title,anchor", [("알 수 없는 일정", False), ("휴식", True)])
+def test_rejects_non_place_id_when_safe_normalization_would_be_ambiguous_or_remove_anchor(title, anchor):
+    trip, preferences, companions, interests, context, places = _inputs()
+    places[0]["is_anchor"] = anchor
+    response = _plan([{"visit_date": "2026-10-10", "items": [
+        {"sequence": 1, "item_type": "REST", "title": title, "place_id": 101, "start_time": "10:00", "end_time": "11:00"},
+    ]}])
+    provider, _ = _provider(response)
+
+    with pytest.raises(AppError) as error:
+        provider.generate_plan(trip, preferences, companions, interests, context, places)
+
+    assert error.value.code == "EXAONE_INVALID_RESPONSE"
 
 
 def test_rejects_duplicate_ids_after_retry():
@@ -388,7 +492,26 @@ def test_regeneration_payload_preserves_actual_snapshot_and_selected_feedback(
         "reason": reason,
         "instruction": "Revise only what the selected feedback requires.",
         "feedback_codes": feedback_codes,
-        "current_itinerary": current_itinerary,
+        "current_itinerary": [
+            {
+                "place_id": 101,
+                "visit_date": "2026-10-10",
+                "sequence_no": 1,
+                "item_type": "PLACE",
+                "title": "부산미술관",
+                "start_time": "10:00:00",
+                "end_time": "11:00:00",
+            },
+            {
+                "place_id": None,
+                "visit_date": "2026-10-10",
+                "sequence_no": 2,
+                "item_type": "REST",
+                "title": "휴식",
+                "start_time": "11:00:00",
+                "end_time": "11:30:00",
+            },
+        ],
     }
     assert client.calls[0]["messages"][0]["content"].endswith(REGENERATION_PROMPT)
 
@@ -396,8 +519,8 @@ def test_regeneration_payload_preserves_actual_snapshot_and_selected_feedback(
 def test_regeneration_prompt_names_revision_rules_and_existing_output_schema():
     for required_text in (
         "partial itinerary revision, not a fresh itinerary",
-        "`current_itinerary`",
-        "`item_id`, `place_id`, `visit_date`",
+        "current_itinerary",
+        "place_id, visit_date, sequence_no",
         "`walking`",
         "`places`",
         "`travel`",
@@ -406,7 +529,6 @@ def test_regeneration_prompt_names_revision_rules_and_existing_output_schema():
         "is_anchor=true",
         "REST and FREE_TIME must have place_id null",
         "every non-null place_id unique",
-        "Do not emit item_id",
         "a diff",
     ):
         assert required_text in REGENERATION_PROMPT
@@ -414,11 +536,10 @@ def test_regeneration_prompt_names_revision_rules_and_existing_output_schema():
 
 def test_initial_prompt_distinguishes_rest_from_location_unknown_free_time():
     for required_text in (
-        "no more than two non-food PLACE visits",
-        "REST is a planned rest interval",
-        "FREE_TIME is only an unscheduled, location-unknown flexible interval",
-        "Do not label FREE_TIME as a nearby walk",
-        "short geographic gap",
+        "REST is a planned interval",
+        "FREE_TIME is location-unknown flexible time",
+        "restful visit to a supplied cafe",
+        "do not claim route feasibility",
     ):
         assert required_text in PLAN_SYSTEM_PROMPT
 
@@ -435,8 +556,6 @@ def test_payload_preserves_anchor_metadata_for_the_model_prompt():
             "place_id": 101,
             "name": places[0]["name"],
             "category": places[0]["category"],
-            "region": places[0]["region"],
-            "address": places[0]["address"],
             "is_anchor": True,
         }
     ]
@@ -448,7 +567,7 @@ def test_request_sets_context_size_and_limits_days_to_trip_dates():
     provider.generate_plan(*_inputs("2026-10-11"))
 
     call = client.calls[0]
-    assert call["options"] == {"temperature": 0, "num_ctx": 8192, "num_predict": 256 + 2 * 768}
+    assert call["options"] == {"temperature": 0, "num_ctx": 8192, "num_predict": 256 + 2 * 512}
     days_schema = call["format_schema"]["properties"]["days"]
     assert days_schema["minItems"] == days_schema["maxItems"] == 2
     assert days_schema["items"]["properties"]["visit_date"]["enum"] == ["2026-10-10", "2026-10-11"]
@@ -582,3 +701,57 @@ def test_duplicate_place_id_cross_day_rejected_after_two_attempts():
 
     assert error.value.code == "EXAONE_INVALID_RESPONSE"
     assert len(client.calls) == 2
+
+
+def _jeju_inputs(anchor=None):
+    trip = {"destination": "제주", "start_date": "2026-10-27", "end_date": "2026-10-27", "budget_krw": 300000}
+    places = [
+        {"place_id": 592, "name": "올레길 1코스(시흥-광치기 올레)", "category": "여행 > 관광,명소 > 도보여행 > 올레길", "region": "제주특별자치도", "address": "제주특별자치도 서귀포시 성산읍 시흥리"},
+        {"place_id": 612, "name": "시흥해녀의집", "category": "음식점 > 한식 > 해물,생선", "region": "제주특별자치도", "address": "제주특별자치도 서귀포시 성산읍 시흥리 12-64"},
+        {"place_id": 613, "name": "제주김만복김밥 서귀포점", "category": "음식점 > 분식", "region": "제주특별자치도", "address": "제주특별자치도 서귀포시 강정동 428-4"},
+    ]
+    for place in places:
+        place["is_anchor"] = place["place_id"] == anchor
+    return trip, {"travel_style": "SLOW"}, [], ["CAFE"], {"raw_interest_codes": []}, places
+
+
+def _jeju_plan(title="시흥해녀의집", place_id=613):
+    return json.dumps({"days": [{"visit_date": "2026-10-27", "items": [
+        {"sequence": 1, "item_type": "PLACE", "title": "올레길 1코스(시흥-광치기 올레)", "place_id": 592, "start_time": "09:00", "end_time": "12:00"},
+        {"sequence": 2, "item_type": "PLACE", "title": title, "place_id": place_id, "start_time": "13:00", "end_time": "14:00"},
+    ]}]}, ensure_ascii=False)
+
+
+def test_trip86_exact_title_of_another_candidate_corrects_the_place_id(caplog):
+    provider, _ = _provider(_jeju_plan())
+    with caplog.at_level(logging.INFO):
+        draft = provider.generate_plan(*_jeju_inputs())
+    lunch = draft.days[0].items[1]
+    assert (lunch.place_id, lunch.title, lunch.item_type) == (612, "시흥해녀의집", "MEAL")
+    assert any("place_id corrected by exact title: model_place_id=613 corrected_place_id=612" in r.getMessage() for r in caplog.records)
+
+
+def test_matching_title_and_id_are_left_alone():
+    provider, _ = _provider(_jeju_plan(title="제주김만복김밥 서귀포점", place_id=613))
+    draft = provider.generate_plan(*_jeju_inputs())
+    assert draft.days[0].items[1].place_id == 613
+
+
+def test_unmatched_or_partial_title_keeps_the_id_and_canonical_name():
+    provider, _ = _provider(_jeju_plan(title="시흥해녀", place_id=613))
+    draft = provider.generate_plan(*_jeju_inputs())
+    assert (draft.days[0].items[1].place_id, draft.days[0].items[1].title) == (613, "제주김만복김밥 서귀포점")
+
+
+def test_duplicated_candidate_name_is_never_used_to_change_the_id():
+    trip, preferences, companions, interests, context, places = _jeju_inputs()
+    places.append({"place_id": 700, "name": "시흥해녀의집", "category": "음식점 > 한식", "region": "제주특별자치도", "address": "제주특별자치도 서귀포시 성산읍 시흥리 1", "is_anchor": False})
+    provider, _ = _provider(_jeju_plan())
+    draft = provider.generate_plan(trip, preferences, companions, interests, context, places)
+    assert draft.days[0].items[1].place_id == 613
+
+
+def test_an_anchor_id_is_never_replaced_by_a_title_match():
+    provider, _ = _provider(_jeju_plan())
+    draft = provider.generate_plan(*_jeju_inputs(anchor=613))
+    assert draft.days[0].items[1].place_id == 613

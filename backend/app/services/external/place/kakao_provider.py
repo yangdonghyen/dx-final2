@@ -5,7 +5,7 @@ import socket
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from app.core.exceptions import AppError
 from app.services.external.place.provider import PlaceCandidate
@@ -17,9 +17,18 @@ KAKAO_CATEGORY_ENDPOINT = "https://dapi.kakao.com/v2/local/search/category.json"
 KAKAO_ADDRESS_ENDPOINT = "https://dapi.kakao.com/v2/local/search/address.json"
 
 
+_DIRECT_OPENER = build_opener(ProxyHandler({}))
+
+
 def _urlopen_get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+    """Call Kakao directly, not through unrelated process proxy settings.
+
+    Kakao Local credentials are sent only to the fixed HTTPS Kakao endpoint.
+    A stale localhost HTTP(S)_PROXY otherwise turns a valid Kakao response
+    into URLError before the provider can classify its HTTP status.
+    """
     request = Request(url, headers=headers, method="GET")
-    with urlopen(request, timeout=timeout) as response:
+    with _DIRECT_OPENER.open(request, timeout=timeout) as response:
         return response.status, response.read()
 
 

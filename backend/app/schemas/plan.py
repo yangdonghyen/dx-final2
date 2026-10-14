@@ -14,6 +14,7 @@ PlanEditOperation = Literal[
     "REPLACE_PLACE",
     "ADD_REST",
     "REORDER",
+    "UPDATE_ITEM",
 ]
 
 
@@ -30,6 +31,7 @@ class PlanItemResponse(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     category: str | None = None
+    note: str | None = None
     # Optional route facts; NULL minutes mean UNKNOWN, never zero.
     transport_mode_from_previous: str | None = None
     travel_minutes_from_previous: int | None = None
@@ -58,6 +60,10 @@ class PlanEditRequest(BaseModel):
     after_item_id: int | None = None
     duration_minutes: int | None = Field(default=None, gt=0)
     item_ids: list[int] | None = None
+    # UPDATE_ITEM: new start "HH:MM" (duration kept), a rest's title, the note.
+    start_time: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    title: str | None = Field(default=None, min_length=1, max_length=100)
+    note: str | None = Field(default=None, max_length=255)
 
 
 class PlanEditResponse(BaseModel):
@@ -70,7 +76,11 @@ class PlanEditResponse(BaseModel):
 
 
 class PlanGenerateRequest(BaseModel):
-    selected_place_ids: list[int] = Field(default_factory=list, max_length=24)
+    # ``None`` means the client did not make an anchor selection.  It is
+    # intentionally different from ``[]``: an explicit empty list clears the
+    # anchors for a newly-created citywide trip, while an omitted field must
+    # not erase anchors already stored on an existing trip.
+    selected_place_ids: list[int] | None = Field(default=None, max_length=24)
 
 
 class PlanDetailResponse(PlanGenerateResponse):

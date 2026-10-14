@@ -80,10 +80,12 @@ class SceneRecognitionResult {
 }
 
 class SceneImageService {
-  SceneImageService({String? baseUrl})
-    : _baseUrl = baseUrl ?? ApiClient().baseUrl;
+  SceneImageService({String? baseUrl, http.Client? client})
+    : _baseUrl = baseUrl ?? ApiClient().baseUrl,
+      _client = client ?? http.Client();
 
   final String _baseUrl;
+  final http.Client _client;
 
   /// Sends the photo to the server and returns the recognized place.
   Future<SceneRecognitionResult> analyze(String imagePath) async {
@@ -107,7 +109,7 @@ class SceneImageService {
             ),
           );
 
-    final response = await http.Response.fromStream(await request.send());
+    final response = await http.Response.fromStream(await _client.send(request));
     final decoded = jsonDecode(utf8.decode(response.bodyBytes));
     final body = decoded is Map<String, dynamic>
         ? decoded

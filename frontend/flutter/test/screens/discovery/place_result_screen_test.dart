@@ -5,59 +5,44 @@ import 'package:travel_mate/screens/discovery/place_result_screen.dart';
 import 'package:travel_mate/screens/trip/trip_places_screen.dart';
 import 'package:travel_mate/services/scene_image_service.dart';
 
-SceneImageAnalysisResult _analysis({SceneVerifiedPlace? verifiedPlace}) {
-  const candidate = ScenePlaceCandidate(placeName: 'Gyeongbokgung Palace');
-  return SceneImageAnalysisResult(
-    filename: 'scene.jpg',
-    contentType: 'image/jpeg',
-    sizeBytes: 1,
-    recognized: true,
-    primaryCandidate: candidate,
-    candidates: const [candidate],
-    evidence: const [],
-    confidence: 'HIGH',
-    needsVerification: true,
-    placeVerified: verifiedPlace != null,
-    verifiedPlace: verifiedPlace,
-  );
-}
+const _imagePath = 'test/screens/discovery/place_result_screen_test.dart';
 
 void main() {
-  testWidgets('blocks trip creation until the Kakao place is verified', (tester) async {
+  testWidgets('shows a retake action when the image has no recognized place', (tester) async {
     await tester.pumpWidget(
-      MaterialApp(home: PlaceResultScreen(analysis: _analysis())),
+      const MaterialApp(
+        home: PlaceResultScreen(
+          imagePath: _imagePath,
+          result: SceneRecognitionResult(recognized: false, verified: false),
+        ),
+      ),
     );
 
-    final button = tester.widget<FilledButton>(
-      find.byKey(const Key('create-trip-button')),
-    );
-    expect(button.onPressed, isNull);
+    expect(find.text('어디인지는 알 수 없었어요'), findsOneWidget);
+    expect(find.text('다시 찍기'), findsOneWidget);
+    expect(find.text('여행 코스 짜기'), findsNothing);
   });
 
-  testWidgets('passes only the verified place and coordinates into trip creation', (tester) async {
-    const verifiedPlace = SceneVerifiedPlace(
-      placeName: 'Gyeongbokgung Palace',
-      address: 'Seoul Jongno-gu',
-      roadAddress: '161 Sajik-ro',
-      latitude: 37.5796,
-      longitude: 126.9770,
-      category: 'Attraction',
-      source: 'KAKAO',
-    );
+  testWidgets('starts trip creation from a recognized place without inventing coordinates', (tester) async {
     await tester.pumpWidget(
-      MaterialApp(home: PlaceResultScreen(analysis: _analysis(verifiedPlace: verifiedPlace))),
+      const MaterialApp(
+        home: PlaceResultScreen(
+          imagePath: _imagePath,
+          result: SceneRecognitionResult(
+            recognized: true,
+            verified: false,
+            placeName: 'Gyeongbokgung Palace',
+            areaLabel: 'Seoul',
+          ),
+        ),
+      ),
     );
 
-    final button = tester.widget<FilledButton>(
-      find.byKey(const Key('create-trip-button')),
-    );
-    expect(button.onPressed, isNotNull);
-    await tester.tap(find.byKey(const Key('create-trip-button')));
+    expect(find.text('AI가 추측한 장소예요. 지도에서 확인되지 않았으니 정확한지 한 번 확인해주세요.'), findsOneWidget);
+    await tester.tap(find.text('여행 코스 짜기'));
     await tester.pumpAndSettle();
 
     final tripScreen = tester.widget<TripPlacesScreen>(find.byType(TripPlacesScreen));
     expect(tripScreen.initialPlaces, {'Gyeongbokgung Palace'});
-    expect(tripScreen.initialVerifiedPlace!.latitude, 37.5796);
-    expect(tripScreen.initialVerifiedPlace!.longitude, 126.9770);
   });
 }

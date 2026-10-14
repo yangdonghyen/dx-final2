@@ -50,7 +50,7 @@ void main() {
     );
   });
 
-  test('a failing server is retried a limited number of times', () async {
+  test('a failing server keeps being retried at the 30-second ceiling', () async {
     var calls = 0;
     final delays = <Duration>[];
     _FakeTimer? pending;
@@ -66,14 +66,18 @@ void main() {
     );
 
     await service.start();
-    while (pending != null && pending!.isActive) {
-      final timer = pending!;
-      timer.fire();
+    for (var i = 0; i < 8; i++) {
+      pending!.fire();
       await Future<void>.delayed(Duration.zero);
     }
 
-    expect(calls, 1 + YoutubeBridgeService.maxReconnectAttempts);
-    expect(delays, hasLength(YoutubeBridgeService.maxReconnectAttempts));
+    expect(calls, 9);
+    expect(delays.take(5), [
+      for (var i = 1; i <= 5; i++) YoutubeBridgeService.reconnectDelay(i),
+    ]);
+    expect(delays.skip(5), everyElement(const Duration(seconds: 30)));
+    expect(service.isReconnectPending, isTrue); // still trying, no give-up
+    await service.stop();
     expect(service.isReconnectPending, isFalse);
   });
 

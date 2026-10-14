@@ -12,7 +12,7 @@ from app.repositories.trip_repository import TripRepository
 from app.schemas.plan import PlanRegenerationPreviewApplyResponse
 from app.services.external.ai.provider import GeneratedPlanDraft, PlanDraftDay, PlanDraftItem
 from app.services.plan_generation_service import PlanGenerationService
-from app.services.plan_regeneration_preview_service import PlanRegenerationPreviewService
+from app.services.plan_regeneration_preview_service import PlanRegenerationPreviewService, with_current_places
 from app.services.plan_travel_time import stored_travel_columns
 
 
@@ -99,7 +99,9 @@ class PlanRegenerationApprovalService:
             if preview.base_version != plan.current_version: raise AppError("PREVIEW_VERSION_CONFLICT", "Plan changed after preview creation", 409)
             current = [self._snapshot(item) for item in self.items.list(plan.plan_id)]
             if preview.current_itinerary_snapshot != {"items": current}: raise AppError("PREVIEW_STALE", "Current itinerary no longer matches preview", 409)
-            _, _, _, _, _, _, anchor_ids, candidate_places = self.generation._input(trip)
+            _, _, _, _, _, candidates, anchor_ids, candidate_places = self.generation._input(trip)
+            # The same candidate set the preview was built and validated with.
+            _, candidate_places = with_current_places(self.generation, current, candidates, candidate_places, anchor_ids, trip)
             days = self._validate_stored_draft(self._draft(preview.proposed_itinerary), trip, candidate_places, anchor_ids)
             travel = self._proposed_travel(preview.proposed_itinerary)
             self.revisions.create(plan.plan_id, revision_no=plan.current_version, revision_type=preview.reason, instruction=None, snapshot={"current_version": plan.current_version, "items": current})

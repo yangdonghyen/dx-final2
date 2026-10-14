@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:flutter/services.dart';
@@ -40,6 +42,7 @@ class ItineraryScreen extends StatefulWidget {
     this.changeNotice,
     this.generatedPlan,
     this.planService,
+    this.weatherInstruction,
   });
 
   final ItinerarySession? session;
@@ -52,6 +55,11 @@ class ItineraryScreen extends StatefulWidget {
   final Set<String> transport;
   final List<String> places;
   final String? changeNotice;
+
+  /// TC-08: opened from the weather screen's plan 2/3.  Once the stored plan
+  /// is shown, a WEATHER_CHANGE proposal is requested with this instruction;
+  /// nothing changes until the user approves it.
+  final String? weatherInstruction;
 
   List<String> get confirmedPlaces =>
       places.isNotEmpty ? places : ActiveTripService.places;
@@ -79,6 +87,16 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
   final Set<String> selectedComfortReasons = {};
   final GlobalKey _selectedScheduleItemKey = GlobalKey();
   final ScrollController _dayScrollController = ScrollController();
+
+  /// '전체' tab: every day on one vertical list (map folded by default).
+  bool _showAllDays = false;
+  bool _mapOpenInAllDays = false;
+  bool _mapFolded = false;
+  final Set<int> _foldedDays = <int>{};
+  bool _hoursWarningsOpen = false;
+
+  /// The server's repeated warning for places without verified hours.
+  static const _unverifiedHoursWarning = 'Opening hours are not verified for this visit';
   late final ItinerarySession _session = widget.session ?? ItinerarySession();
   final TripService _tripService = TripService();
   late final PlanService _planService = widget.planService ?? PlanService();
@@ -109,11 +127,14 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
   bool get hasAppliedComfortReasons => appliedComfortReasons.isNotEmpty;
   void _setSelectedDay(int value) {
     final nextDay = value.clamp(0, _days.length - 1);
-    if (nextDay == selectedDay) return;
-    setState(() => selectedDay = nextDay);
+    if (nextDay == selectedDay && !_showAllDays) return;
+    setState(() {
+      selectedDay = nextDay;
+      _showAllDays = false;
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_dayScrollController.hasClients) return;
-      final target = (nextDay * 88.0 - 88.0)
+      final target = (72.0 + nextDay * 88.0 - 88.0)
           .clamp(0.0, _dayScrollController.position.maxScrollExtent)
           .toDouble();
       _dayScrollController.animateTo(
@@ -156,6 +177,13 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
       return;
     }
 
+    final stop = schedule[index];
+    final plan = _plan;
+    if (plan != null && stop.itemId != null) {
+      unawaited(_saveEditOnServer(plan, stop, editedTime));
+      return;
+    }
+
     final updated = List<_PlanStop>.from(schedule);
     updated[index] = updated[index].copyWith(
       time: editedTime.isEmpty ? updated[index].time : editedTime,
@@ -174,6 +202,35 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('수정한 일정을 저장했어요.')));
+  }
+
+  /// Saves only what changed, then shows the server's itinerary.
+  Future<void> _saveEditOnServer(GeneratedPlan plan, _PlanStop stop, String editedTime) async {
+    final place = _editPlaceController.text.trim();
+    final note = _editDescriptionController.text.trim();
+    try {
+      await _planService.updateItem(
+        plan.planId,
+        stop.itemId!,
+        startTime: editedTime.isNotEmpty && editedTime != stop.time ? editedTime : null,
+        title: !stop.isPlace && place.isNotEmpty && place != stop.place ? place : null,
+        note: note != stop.description ? note : null,
+      );
+      final latest = await _planService.get(plan.planId);
+      if (!mounted) return;
+      setState(() {
+        _loadedPlan = latest;
+        _applyPlan(latest);
+        editingScheduleIndex = null;
+      });
+      NotificationService.addEditCompleted(place: stop.place);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('수정한 일정을 저장했어요. 동행자에게도 보여요.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(planErrorMessage(error))));
+    }
   }
 
   Widget _inlineEditPanel(List<_PlanStop> schedule, int index) => Container(
@@ -204,7 +261,15 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
         const SizedBox(height: 8),
         TextField(
           controller: _editPlaceController,
-          decoration: const InputDecoration(labelText: '장소', isDense: true),
+          // A verified place is changed with 장소 바꾸기, not by retyping it.
+          enabled: !schedule[index].isPlace || schedule[index].itemId == null,
+          decoration: InputDecoration(
+            labelText: '장소',
+            isDense: true,
+            helperText: schedule[index].isPlace && schedule[index].itemId != null
+                ? '방문 장소 이름은 바꿀 수 없어요'
+                : null,
+          ),
         ),
         const SizedBox(height: 8),
         TextField(
@@ -295,6 +360,8 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
                       _generatedPosition(item),
                       travel: item.travelLabel,
                       travelMode: item.transportModeFromPrevious,
+                      itemId: item.itemId,
+                      isPlace: item.placeId != null,
                     ),
                 ],
               )
@@ -314,6 +381,8 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
       : null;
 
   static String _generatedDescription(GeneratedPlanItem item) {
+    final note = item.note?.trim();
+    if (note != null && note.isNotEmpty) return note;
     final details = [
       if (item.address != null && item.address!.isNotEmpty) item.address!,
       if (item.category != null && item.category!.isNotEmpty)
@@ -330,6 +399,7 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
     final plan = widget.generatedPlan;
     if (plan != null) {
       _applyPlan(plan);
+      _requestWeatherPreviewOnce(plan);
     } else if (ActiveTripService.planId != null ||
         ActiveTripService.tripId != null) {
       _loadSavedPlan();
@@ -366,6 +436,7 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
           _applyPlan(plan);
         }
       });
+      if (plan != null) _requestWeatherPreviewOnce(plan);
     } catch (error) {
       debugPrint('[Plan] load failed: $error');
       if (!mounted) return;
@@ -789,23 +860,47 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
     'rest': 'Add more rest or free time between activities.',
   };
 
+  bool _weatherPreviewRequested = false;
+
+  void _requestWeatherPreviewOnce(GeneratedPlan plan) {
+    final instruction = widget.weatherInstruction;
+    if (instruction == null || _weatherPreviewRequested) return;
+    _weatherPreviewRequested = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _requestPreview(plan, reason: 'WEATHER_CHANGE', instruction: instruction);
+      }
+    });
+  }
+
   /// Requests a pending change only; the displayed itinerary stays unchanged.
   Future<void> _regenerateEasier(
     GeneratedPlan plan,
     Set<String> reasons,
-  ) async {
+  ) => _requestPreview(
+    plan,
+    reason: 'USER_FATIGUE',
+    instruction: [
+      'The traveler said the schedule is too tiring.',
+      for (final reason in _comfortOptions.map((option) => option.$1))
+        if (reasons.contains(reason)) _comfortInstructions[reason]!,
+    ].join(' '),
+    feedbackCodes: reasons.toList()..sort(),
+  );
+
+  Future<void> _requestPreview(
+    GeneratedPlan plan, {
+    required String reason,
+    required String instruction,
+    List<String> feedbackCodes = const <String>[],
+  }) async {
     setState(() => rebuilding = true);
     try {
-      final instruction = [
-        'The traveler said the schedule is too tiring.',
-        for (final reason in _comfortOptions.map((option) => option.$1))
-          if (reasons.contains(reason)) _comfortInstructions[reason]!,
-      ].join(' ');
       final preview = await _planService.createRegenerationPreview(
         plan.planId,
-        reason: 'USER_FATIGUE',
+        reason: reason,
         instruction: instruction,
-        feedbackCodes: reasons.toList()..sort(),
+        feedbackCodes: feedbackCodes,
       );
       if (!mounted) return;
       setState(() {
@@ -1738,6 +1833,19 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
   );
   /// What the server's plan check found (meal times, food-only days,
   /// repeated areas, unverified long legs). Shown as stored, never hidden.
+  /// Places of the current plan without verified opening hours, in plan order.
+  List<String> _unverifiedHoursPlaces() {
+    final names = <String>[];
+    for (final day in _plan?.days ?? const <GeneratedPlanDay>[]) {
+      for (final item in day.items) {
+        if (item.placeId != null && item.validationStatus == 'WARNING' && !names.contains(item.name)) {
+          names.add(item.name);
+        }
+      }
+    }
+    return names.isEmpty ? ['상세 장소 정보는 각 일정에서 확인해주세요'] : names;
+  }
+
   Widget _planWarningsCard(List<String> warnings) => Container(
     margin: const EdgeInsets.only(bottom: 12),
     padding: const EdgeInsets.all(14),
@@ -1754,7 +1862,8 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
           style: TextStyle(fontWeight: FontWeight.w900),
         ),
         const SizedBox(height: 6),
-        for (final warning in warnings)
+        // Every other warning stays visible as sent by the server.
+        for (final warning in warnings.where((w) => w != _unverifiedHoursWarning))
           Padding(
             padding: const EdgeInsets.only(top: 3),
             child: Text(
@@ -1762,6 +1871,47 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
               style: const TextStyle(fontSize: 13, color: Color(0xFF9A3412)),
             ),
           ),
+        if (warnings.contains(_unverifiedHoursWarning)) ...[
+          InkWell(
+            onTap: () => setState(() => _hoursWarningsOpen = !_hoursWarningsOpen),
+            child: Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '• 영업시간이 확인되지 않은 장소 '
+                      '${warnings.where((w) => w == _unverifiedHoursWarning).length}곳 · 방문 전 영업 여부를 확인해주세요',
+                      style: const TextStyle(fontSize: 13, color: Color(0xFF9A3412)),
+                    ),
+                  ),
+                  Icon(
+                    _hoursWarningsOpen ? Icons.expand_less_rounded : Icons.expand_more_rounded,
+                    size: 18,
+                    color: const Color(0xFF9A3412),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_hoursWarningsOpen)
+            const Padding(
+              padding: EdgeInsets.only(left: 12, top: 4),
+              child: Text(
+                '확인 표시가 붙은 장소 (영업시간 미확인 포함)',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF9A3412)),
+              ),
+            ),
+          if (_hoursWarningsOpen)
+            for (final place in _unverifiedHoursPlaces())
+              Padding(
+                padding: const EdgeInsets.only(left: 12, top: 2),
+                child: Text(
+                  '- $place',
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF9A3412)),
+                ),
+              ),
+        ],
       ],
     ),
   );
@@ -1840,16 +1990,50 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
         : _buildConfirmedDay(baseSchedule, selectedDay);
     final schedule = _manualSchedules[selectedDay] ?? generatedSchedule;
     final firstAttractionIndex = schedule.indexWhere(_isAttraction);
+    // Keep the last buttons (코스 수정, 일정이 힘들어요) clear of the system
+    // gesture area and the bottom navigation when scrolled to the end.
+    final listPadding = EdgeInsets.fromLTRB(
+      20, 16, 20, 40 + MediaQuery.viewPaddingOf(context).bottom,
+    );
     return Scaffold(
       backgroundColor: AppColors.bg,
       body: SafeArea(
         child: Column(
           children: [
-            _mapHeader(schedule, day),
+            _mapHeader(
+              _showAllDays
+                  ? [for (var index = 0; index < _days.length; index++) ..._scheduleForDay(index, schedule)]
+                  : schedule,
+              _showAllDays ? ('전체', '${_days.length}일 일정') : day,
+            ),
             _daySelector(),
             Expanded(
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+              child: _showAllDays
+                  ? ListView(
+                      padding: listPadding,
+                      children: [
+                        _actionCard(),
+                        if (_plan != null && _plan!.warnings.isNotEmpty)
+                          _planWarningsCard(_plan!.warnings),
+                        if (_pendingPreview != null && _plan != null)
+                          _previewCard(_plan!),
+                        if (widget.changeNotice != null)
+                          _changeNoticeBanner(widget.changeNotice!),
+                        if (appliedChanges.isNotEmpty) _appliedChangesCard(),
+                        for (var index = 0; index < _days.length; index++)
+                          _allDaysSection(index, _scheduleForDay(index, schedule)),
+                      ],
+                    )
+                  : GestureDetector(
+                      // Swipe the list (not the map) to the previous/next day.
+                      behavior: HitTestBehavior.translucent,
+                      onHorizontalDragEnd: (details) {
+                        final velocity = details.primaryVelocity ?? 0;
+                        if (velocity.abs() < 300) return;
+                        _setSelectedDay(selectedDay + (velocity < 0 ? 1 : -1));
+                      },
+                      child: ListView(
+                padding: listPadding,
                 children: [
                   _actionCard(),
                   if (_plan != null && _plan!.warnings.isNotEmpty)
@@ -1996,11 +2180,68 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
                   ),
                 ],
               ),
+                    ),
             ),
           ],
         ),
       ),
       bottomNavigationBar: const AppBottomNavigation(selectedIndex: 0),
+    );
+  }
+
+  /// One day's stops, the same source the DAY tab uses for that day.
+  List<_PlanStop> _scheduleForDay(int index, List<_PlanStop> selectedSchedule) {
+    if (index == selectedDay) return selectedSchedule;
+    final manual = _manualSchedules[index];
+    if (manual != null) return manual;
+    final aiDays = _generatedDays;
+    if (aiDays != null) return aiDays[index];
+    return _buildConfirmedDay(plans[(selectedPlan + index) % plans.length], index);
+  }
+
+  /// A foldable day section of the '전체' tab (read-only; edit on its DAY tab).
+  Widget _allDaysSection(int index, List<_PlanStop> schedule) {
+    final day = _days[index];
+    final folded = _foldedDays.contains(index);
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: () => setState(() => folded ? _foldedDays.remove(index) : _foldedDays.add(index)),
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Row(
+                children: [
+                  Text(day.$1, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${day.$2} · ${schedule.length}개 일정',
+                      style: const TextStyle(color: Color(0xFF6B7280)),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => _setSelectedDay(index),
+                    child: const Text('상세'),
+                  ),
+                  Icon(folded ? Icons.expand_more_rounded : Icons.expand_less_rounded),
+                ],
+              ),
+            ),
+          ),
+          if (!folded)
+            for (var item = 0; item < schedule.length; item++) ...[
+              _ScheduleItem(index: item + 1, data: schedule[item], editable: false),
+              if (item < schedule.length - 1)
+                hasAppliedComfortReasons && index == selectedDay
+                    ? const SizedBox(height: 10)
+                    : _travelLine(schedule[item + 1]),
+            ],
+        ],
+      ),
     );
   }
 
@@ -2065,14 +2306,43 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
                 ],
               ),
             ),
-            ItineraryRouteMap(
-              points: schedule
-                  .where((item) => item.position != null)
-                  .map((item) => ItineraryMapPoint(item.place, item.position!))
-                  .toList(),
-              satellite: satellite,
-              height: 208,
-              label: '번호는 아래 일정 순서와 같아요.',
+            if (_showAllDays ? _mapOpenInAllDays : !_mapFolded)
+              ItineraryRouteMap(
+                points: schedule
+                    .where((item) => item.position != null)
+                    .map((item) => ItineraryMapPoint(item.place, item.position!))
+                    .toList(),
+                satellite: satellite,
+                height: 208,
+                label: '번호는 아래 일정 순서와 같아요.',
+              ),
+            InkWell(
+              onTap: () => setState(() {
+                if (_showAllDays) {
+                  _mapOpenInAllDays = !_mapOpenInAllDays;
+                } else {
+                  _mapFolded = !_mapFolded;
+                }
+              }),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      (_showAllDays ? _mapOpenInAllDays : !_mapFolded)
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      size: 20,
+                      color: const Color(0xFF6B7280),
+                    ),
+                    Text(
+                      (_showAllDays ? _mapOpenInAllDays : !_mapFolded) ? '지도 접기' : '지도 펼치기',
+                      style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280), fontWeight: FontWeight.w700),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),
@@ -2101,7 +2371,7 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
     child: Row(
       children: [
         IconButton(
-          onPressed: selectedDay == 0
+          onPressed: selectedDay == 0 || _showAllDays
               ? null
               : () => _setSelectedDay(selectedDay - 1),
           icon: const Icon(Icons.chevron_left_rounded),
@@ -2112,8 +2382,28 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
             controller: _dayScrollController,
             scrollDirection: Axis.horizontal,
             child: Row(
-              children: _days.asMap().entries.map((entry) {
-                final selected = selectedDay == entry.key;
+              children: [
+                SizedBox(
+                  width: 72,
+                  child: TextButton(
+                    onPressed: () => setState(() => _showAllDays = true),
+                    style: TextButton.styleFrom(
+                      foregroundColor: _showAllDays ? AppColors.primary : const Color(0xFF6B7280),
+                      backgroundColor: _showAllDays ? AppColors.soft : Colors.transparent,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Text('전체', style: TextStyle(fontWeight: FontWeight.w900)),
+                        const SizedBox(height: 2),
+                        Text('${_days.length}일', style: const TextStyle(fontSize: 11)),
+                      ],
+                    ),
+                  ),
+                ),
+                ..._days.asMap().entries.map((entry) {
+                final selected = !_showAllDays && selectedDay == entry.key;
                 return SizedBox(
                   width: 88,
                   child: TextButton(
@@ -2145,12 +2435,13 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
                     ),
                   ),
                 );
-              }).toList(),
+              }),
+              ],
             ),
           ),
         ),
         IconButton(
-          onPressed: selectedDay == _days.length - 1
+          onPressed: selectedDay == _days.length - 1 || _showAllDays
               ? null
               : () => _setSelectedDay(selectedDay + 1),
           icon: const Icon(Icons.chevron_right_rounded),
@@ -2794,7 +3085,15 @@ class _PlanStop {
     this.position, {
     this.travel,
     this.travelMode,
+    this.itemId,
+    this.isPlace = false,
   });
+
+  /// Server plan item; null for the built-in sample schedule.
+  final int? itemId;
+
+  /// A verified place keeps its name; only rests can be renamed.
+  final bool isPlace;
 
   final String time;
   final String emoji;
@@ -2822,6 +3121,8 @@ class _PlanStop {
     position ?? this.position,
     travel: travel,
     travelMode: travelMode,
+    itemId: itemId,
+    isPlace: isPlace,
   );
 }
 

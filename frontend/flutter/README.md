@@ -12,6 +12,20 @@ flutter analyze
 flutter run -d emulator-5558
 ```
 
+## Android physical-device backend URL
+
+The default API URL (`127.0.0.1:8000`) only works when the backend runs on the
+same device. For a physical Android device, copy
+`.dart_define.dev.example.json` to the ignored `.dart_define.dev.json`, replace
+`YOUR_PC_LAN_IP` with the development PC's LAN IPv4 address, and run:
+
+```powershell
+flutter run -d <ANDROID_DEVICE_ID> --dart-define-from-file=.dart_define.dev.json
+```
+
+Start FastAPI on the PC with `--host 0.0.0.0 --port 8000`. The phone and PC
+must be on the same network. Do not commit the local define file.
+
 `flutter create .`는 이 소스 폴더에 Android/iOS/Web/Windows 등 Flutter 플랫폼 폴더를 생성합니다.
 이미 들어 있는 `lib`, `assets`, `pubspec.yaml`은 이 프로젝트의 소스입니다.
 

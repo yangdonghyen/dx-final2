@@ -4,7 +4,7 @@ from app.db.session import get_db
 from app.dependencies import CurrentUser
 from app.schemas.plan import PlanConfirmResponse, PlanDetailResponse, PlanEditRequest, PlanEditResponse, PlanGenerateRequest, PlanGenerateResponse, PlanRegenerateRequest, PlanRegenerationPreviewResponse, PlanRegenerationPreviewApplyResponse
 from app.core.config import get_settings
-from app.services.external.factory import provide_place_provider, provide_plan_generation_provider, provide_route_provider, provide_naver_cafe_evidence_provider, provide_tour_destination_image_provider
+from app.services.external.factory import provide_place_provider, provide_plan_generation_provider, provide_plan_regeneration_preview_provider, provide_route_provider, provide_naver_cafe_evidence_provider, provide_tour_destination_image_provider
 from app.services.plan_edit_service import PlanEditService
 from app.services.plan_generation_service import PlanGenerationService
 from app.services.plan_revision_service import PlanRevisionService
@@ -14,7 +14,7 @@ router = APIRouter(tags=["plans"])
 def get_service(db=Depends(get_db), provider=Depends(provide_plan_generation_provider), place_provider=Depends(provide_place_provider), route_provider=Depends(provide_route_provider), naver_cafe_provider=Depends(provide_naver_cafe_evidence_provider), tour_hours_provider=Depends(provide_tour_destination_image_provider)): return PlanGenerationService(db, provider, place_provider, route_provider, naver_cafe_provider, tour_hours_provider, get_settings().tour_hours_max_places_per_request)
 def get_edit_service(db=Depends(get_db)): return PlanEditService(db)
 def get_revision_service(db=Depends(get_db), provider=Depends(provide_plan_generation_provider), place_provider=Depends(provide_place_provider), route_provider=Depends(provide_route_provider)): return PlanRevisionService(db, provider, place_provider, route_provider)
-def get_preview_service(db=Depends(get_db), provider=Depends(provide_plan_generation_provider), route_provider=Depends(provide_route_provider)): return PlanRegenerationPreviewService(db, provider, route_provider=route_provider)
+def get_preview_service(db=Depends(get_db), provider=Depends(provide_plan_regeneration_preview_provider), route_provider=Depends(provide_route_provider)): return PlanRegenerationPreviewService(db, provider, route_provider=route_provider)
 def get_approval_service(db=Depends(get_db), provider=Depends(provide_plan_generation_provider), route_provider=Depends(provide_route_provider)): return PlanRegenerationApprovalService(db, provider, route_provider=route_provider)
 Service = Annotated[PlanGenerationService, Depends(get_service)]
 EditService = Annotated[PlanEditService, Depends(get_edit_service)]

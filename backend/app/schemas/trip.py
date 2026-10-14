@@ -164,6 +164,19 @@ class SharedTripCompanionResponse(BaseModel):
     relation: CompanionRelation
 
 
+class SharedTripStop(BaseModel):
+    start_time: str | None
+    title: str
+    item_type: str
+    note: str | None = None
+
+
+class SharedTripDay(BaseModel):
+    day: int
+    visit_date: date
+    stops: list[SharedTripStop]
+
+
 class SharedTripResponse(BaseModel):
     link_type: ShareLinkType
     title: str | None
@@ -173,6 +186,8 @@ class SharedTripResponse(BaseModel):
     owner_nickname: str | None
     companions: list[SharedTripCompanionResponse]
     selected_places: list[str]
+    # The saved itinerary (empty when no plan was made yet).
+    days: list[SharedTripDay] = []
 
 
 class TripJoinResponse(BaseModel):

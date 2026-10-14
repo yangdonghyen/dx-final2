@@ -1,0 +1,77 @@
+{
+ "version": 1,
+ "source": "synthetic",
+ "note": "An anchor visited with an activity title stays the anchor visit.",
+ "kind": "generation",
+ "trip": {
+  "start_date": "2030-01-07",
+  "end_date": "2030-01-07"
+ },
+ "candidates": [
+  {
+   "place_id": 211,
+   "name": "애월해안도로",
+   "category": "여행 > 관광,명소 > 드라이브코스",
+   "region": "제주특별자치도",
+   "latitude": 33.4783,
+   "longitude": 126.369,
+   "is_anchor": true
+  },
+  {
+   "place_id": 592,
+   "name": "올레길 1코스(시흥-광치기 올레)",
+   "category": "여행 > 관광,명소 > 도보여행 > 올레길",
+   "region": "제주특별자치도",
+   "latitude": 33.479,
+   "longitude": 126.906,
+   "is_anchor": false
+  },
+  {
+   "place_id": 638,
+   "name": "노라바",
+   "category": "음식점 > 한식 > 해물,생선",
+   "region": "제주특별자치도",
+   "latitude": 33.4784,
+   "longitude": 126.365,
+   "is_anchor": false
+  }
+ ],
+ "response": {
+  "days": [
+   {
+    "visit_date": "2030-01-07",
+    "items": [
+     {
+      "sequence": 1,
+      "item_type": "PLACE",
+      "place_id": 592,
+      "start_time": "09:00",
+      "end_time": "11:30",
+      "title": "올레길 1코스(시흥-광치기 올레)"
+     },
+     {
+      "sequence": 2,
+      "item_type": "REST",
+      "place_id": 211,
+      "start_time": "12:30",
+      "end_time": "14:00",
+      "title": "애월해안도로 드라이브"
+     }
+    ]
+   }
+  ]
+ },
+ "expected": {
+  "outcome": "accepted",
+  "items": [
+   [
+    592,
+    "PLACE"
+   ],
+   [
+    211,
+    "PLACE"
+   ]
+  ]
+ }
+}

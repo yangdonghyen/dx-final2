@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/layout/app_responsive.dart';
@@ -8,6 +10,7 @@ import '../../widgets/app_bottom_navigation.dart';
 import '../../services/active_trip_service.dart';
 import '../../services/plan_service.dart';
 import '../../models/trip_transport_mode.dart';
+import '../../services/trip_draft_store.dart';
 import '../../services/trip_taste_preferences.dart';
 import '../../services/trip_service.dart';
 import 'itinerary_screen.dart';
@@ -18,6 +21,7 @@ class TripPlacesScreen extends StatefulWidget {
     super.key,
     this.preferredTastes = const {},
     this.initialPlaces = const {},
+    this.initialPlaceIds = const {},
     this.destination,
     this.photoPlan = false,
   });
@@ -29,6 +33,12 @@ class TripPlacesScreen extends StatefulWidget {
   /// 맥락 안내에만 쓰고, id로 보내거나 지역을 추측하는 데 쓰지 않습니다.
   final Set<String> initialPlaces;
 
+  /// Verified backend place IDs selected by a search result.  Display-only
+  /// names from image, YouTube, and legacy screens are deliberately not
+  /// converted by name: that could anchor a different place with the same
+  /// name.
+  final Set<int> initialPlaceIds;
+
   /// 실제 API 등 신뢰 가능한 원천에서 전달된 여행 목적지 지역입니다.
   final String? destination;
 
@@ -38,8 +48,16 @@ class TripPlacesScreen extends StatefulWidget {
   State<TripPlacesScreen> createState() => _TripPlacesScreenState();
 }
 
-class _TripPlacesScreenState extends State<TripPlacesScreen> {
+class _TripPlacesScreenState extends State<TripPlacesScreen>
+    with WidgetsBindingObserver {
   int _step = 1;
+
+  /// 작성 중 입력값 자동 저장(TripDraftStore). 복원이 끝나기 전에는 저장하지
+  /// 않아 빈 초기값이 기존 초안을 덮어쓰지 않고, 여행 생성이 끝나 초안을
+  /// 지운 뒤에는 다시 저장하지 않습니다.
+  bool _draftReady = false;
+  bool _draftFinished = false;
+  Timer? _draftTimer;
 
   /// 목적지를 모를 때 "어디로 가세요?" 단계에서 입력받는 도시·지역 이름입니다.
   final TextEditingController _destinationController = TextEditingController();
@@ -145,13 +163,130 @@ class _TripPlacesScreenState extends State<TripPlacesScreen> {
   @override
   void initState() {
     super.initState();
-    _loadTripTaste();
+    WidgetsBinding.instance.addObserver(this);
+    _destinationController.addListener(_scheduleDraftSave);
+    unawaited(_restoreInputs());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    // Leaving the screen keeps the draft: write the latest values now.
+    _flushDraft();
     _destinationController.dispose();
     super.dispose();
+  }
+
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _scheduleDraftSave();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) _flushDraft();
+  }
+
+  /// Confirmed tastes first, then the newer work-in-progress draft.
+  Future<void> _restoreInputs() async {
+    await _loadTripTaste();
+    final draft = await TripDraftStore.load();
+    if (!mounted) return;
+    if (draft != null && _sameStart(draft)) {
+      super.setState(() => _applyDraft(draft));
+      debugPrint('[TripDraft] restored');
+    }
+    _draftReady = true;
+  }
+
+  /// A draft belongs to the trip it was started for: opening the screen from
+  /// a new video, place or destination starts over instead of jumping to the
+  /// old draft's step.
+  bool _sameStart(Map<String, dynamic> draft) {
+    String key(Iterable<Object?> values) =>
+        (values.map((value) => value.toString()).toList()..sort()).join('|');
+    final saved = draft['origin'];
+    final current = key([...widget.initialPlaces, ?widget.destination]);
+    return key(saved is List ? saved : const []) == current;
+  }
+
+  void _applyDraft(Map<String, dynamic> draft) {
+    final today = DateUtils.dateOnly(DateTime.now());
+    final start = DateTime.tryParse(draft['start_date']?.toString() ?? '');
+    final end = DateTime.tryParse(draft['end_date']?.toString() ?? '');
+    // A trip that would start in the past is not restored as dates.
+    if (start != null && end != null && !end.isBefore(start) && !start.isBefore(today)) {
+      _dates = DateTimeRange(start: start, end: end);
+      _visibleMonth = DateTime(start.year, start.month);
+    }
+    final style = draft['travel_style']?.toString();
+    if (style != null && _styleOptions.contains(style)) _travelStyle = style;
+    final tastes = draft['tastes'];
+    if (tastes is List) {
+      final valid = travelTasteOptions.map((item) => item.$2).toSet();
+      _travelTastes
+        ..clear()
+        ..addAll(tastes.map((value) => value.toString()).where(valid.contains));
+    }
+    final transport = draft['transport'];
+    if (transport is List) {
+      final valid = _transportOptions.map((option) => option.label).toSet();
+      _transport
+        ..clear()
+        ..addAll(transport.map((value) => value.toString()).where(valid.contains));
+    }
+    final companions = draft['companions'];
+    if (companions is List && companions.isNotEmpty) {
+      final names = companions.map((value) => value.toString().trim()).where((name) => name.isNotEmpty).toList();
+      if (names.isNotEmpty) {
+        _registeredCompanions
+          ..clear()
+          ..addAll(names.map((name) => _CompanionProfile(name: name)));
+        final selected = draft['selected_companions'];
+        _selectedCompanionIndices.clear();
+        if (selected is List) {
+          _selectedCompanionIndices.addAll(
+            selected.whereType<int>().where((index) => index >= 0 && index < names.length),
+          );
+        }
+        final current = draft['current_companion'];
+        _selectedCompanionIndex = current is int && current >= 0 && current < names.length ? current : null;
+      }
+    }
+    final destination = draft['destination']?.toString();
+    if (_asksDestination && destination != null && destination.isNotEmpty) {
+      _destinationController.text = destination;
+    }
+    final step = draft['step'];
+    if (step is int && step >= 1 && step <= 6 && (step != 5 || _asksDestination)) _step = step;
+  }
+
+  Map<String, dynamic> get _draft => {
+    'origin': [...widget.initialPlaces, ?widget.destination],
+    'step': _step,
+    'start_date': _dates?.start.toIso8601String(),
+    'end_date': _dates?.end.toIso8601String(),
+    'travel_style': _travelStyle,
+    'tastes': _travelTastes.toList(),
+    'transport': _transport.toList(),
+    'companions': _registeredCompanions.map((companion) => companion.name).toList(),
+    'selected_companions': _selectedCompanionIndices.toList()..sort(),
+    'current_companion': _selectedCompanionIndex,
+    if (_asksDestination) 'destination': _destinationController.text.trim(),
+  };
+
+  void _scheduleDraftSave() {
+    if (!_draftReady || _draftFinished) return;
+    _draftTimer?.cancel();
+    _draftTimer = Timer(const Duration(milliseconds: 400), _flushDraft);
+  }
+
+  void _flushDraft() {
+    _draftTimer?.cancel();
+    _draftTimer = null;
+    if (!_draftReady || _draftFinished) return;
+    unawaited(TripDraftStore.save(_draft));
   }
 
   Future<void> _loadTripTaste() async {
@@ -427,7 +562,10 @@ class _TripPlacesScreenState extends State<TripPlacesScreen> {
     try {
       // 장소를 고르지 않고 목적지 전체 후보로 일정을 만듭니다. 연결이 끊기거나
       // 이미 만든 일정이 있으면 AI를 다시 부르지 않고 서버에 저장된 일정을 불러옵니다.
-      plan = await _planService.generateOrRecover(tripId);
+      plan = await _planService.generateOrRecover(
+        tripId,
+        widget.initialPlaceIds.toList(growable: false),
+      );
     } catch (error) {
       debugPrint('[Plan] generate failed: $error');
       if (!mounted) return;
@@ -455,6 +593,11 @@ class _TripPlacesScreenState extends State<TripPlacesScreen> {
     }
 
     final planPlaceNames = _planPlaceNames(plan);
+
+    // The trip and its plan exist now: the work-in-progress draft is done.
+    _draftFinished = true;
+    _draftTimer?.cancel();
+    unawaited(TripDraftStore.clear());
 
     ActiveTripService.save(
       savedTripId: tripId,

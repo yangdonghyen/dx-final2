@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class AppError(Exception):
     def __init__(
-        self, code: str, message: str, status_code: int = 400, details: dict[str, int | str] | None = None
+        self, code: str, message: str, status_code: int = 400, details: dict[str, int | str | list[str]] | None = None
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -30,7 +30,7 @@ def error_response(
     code: str,
     message: str,
     headers: dict[str, str] | None = None,
-    details: dict[str, int | str] | None = None,
+    details: dict[str, int | str | list[str]] | None = None,
 ) -> JSONResponse:
     payload = ErrorResponse(error=ErrorDetail(code=code, message=message, details=details))
     return JSONResponse(status_code=status_code, content=payload.model_dump(exclude_none=True), headers=headers)

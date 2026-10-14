@@ -13,12 +13,59 @@ from app.core.request_logging import current_request_id
 from app.repositories.plan_repository import PlanItemRepository, PlanRegenerationPreviewRepository, PlanRepository
 from app.repositories.trip_repository import TripRepository
 from app.schemas.plan import PlanRegenerateRequest, PlanRegenerationPreviewResponse
-from app.services.plan_generation_service import PlanGenerationService
+from app.services.place_temporal_validation import verified_hours
+from app.services.plan_generation_service import PlanGenerationService, _is_food_or_cafe
 from app.services.plan_travel_time import travel_columns
 
 
 logger = logging.getLogger("app.plan_regeneration")
 MAX_FEEDBACK_GOAL_PROVIDER_CALLS = 2
+
+
+
+def with_current_places(generation, current, candidates, candidate_places, anchor_ids, trip):
+    """Add the places of the stored itinerary to the preview's candidates.
+
+    A preview rebuilds the candidate pool, which does not contain places
+    added after generation (rest cafes, recovered lunches).  Without them
+    the model cannot keep an unchanged item (the schema only allows
+    candidate ids), so it swapped titles and ids or failed validation
+    (plan 36: 609, 876, 907, 911 were missing).  Only stored places with
+    coordinates that are eligible on the trip dates are added; anything
+    else stays out, exactly as before.
+    """
+    generation_places = getattr(generation, "places", None)
+    if generation_places is None:
+        return candidates, candidate_places
+    candidates, candidate_places = list(candidates), dict(candidate_places)
+    added = []
+    for place_id in dict.fromkeys(row.get("place_id") for row in current):
+        if place_id is None or place_id in candidate_places:
+            continue
+        place = generation_places.get(place_id)
+        if place is None or getattr(place, "latitude", None) is None or getattr(place, "longitude", None) is None:
+            continue
+        if not PlanGenerationService._is_temporally_eligible(place, trip):
+            continue
+        candidate_places[place_id] = place
+        candidates.append({
+            "place_id": place.place_id,
+            "name": place.name,
+            "category": place.category,
+            "region": place.region,
+            "address": place.address,
+            "latitude": place.latitude,
+            "longitude": place.longitude,
+            "is_anchor": place.place_id in anchor_ids,
+            "activity_kind": "FOOD_OR_CAFE" if _is_food_or_cafe(place) else "NON_FOOD_ACTIVITY",
+            "opening_hours": verified_hours(place),
+            "event_start_date": getattr(place, "event_start_date", None),
+            "event_end_date": getattr(place, "event_end_date", None),
+        })
+        added.append(place_id)
+    if added:
+        logger.info("preview_current_places_added request_id=%s place_ids=%s", current_request_id(), added)
+    return candidates, candidate_places
 
 
 class PlanRegenerationPreviewService:
@@ -47,6 +94,9 @@ class PlanRegenerationPreviewService:
         # Travel values are stored with the proposal so approval applies these exact facts.
         travel = travel_columns(estimate)
         return {"place_id": item.place_id, "visit_date": visit_date.isoformat(), "sequence_no": item.sequence, "item_type": item.item_type, "title": item.title, "start_time": start_time.isoformat() if start_time else None, "end_time": end_time.isoformat() if end_time else None, "recommendation_reason": item.recommendation_reason, "transport_mode_from_previous": travel["transport_mode_from_previous"], "travel_minutes_from_previous": travel["travel_minutes_from_previous"], "travel_distance_meters_from_previous": travel["travel_distance_meters_from_previous"]}
+
+    def _with_current_places(self, current, candidates, candidate_places, anchor_ids, trip):
+        return with_current_places(self.generation, current, candidates, candidate_places, anchor_ids, trip)
 
     @staticmethod
     def _validate_no_time_overlap(days) -> None:
@@ -341,12 +391,15 @@ class PlanRegenerationPreviewService:
         feedback_retry_used = False
         try:
             trip_input, preferences, companions, interests, context, candidates, anchor_ids, candidate_places = self.generation._input(trip)
+            candidates, candidate_places = self._with_current_places(current, candidates, candidate_places, anchor_ids, trip)
             retry_instruction = request.instruction
             for attempt in range(MAX_FEEDBACK_GOAL_PROVIDER_CALLS):
                 provider_started_at = monotonic()
                 provider_calls += 1
                 try:
-                    draft = self.provider.regenerate_plan(trip_input, preferences, companions, interests, context, candidates, request.reason, retry_instruction, current, request.feedback_codes)
+                    preview_regenerator = getattr(self.provider, "regenerate_preview_plan", None)
+                    regenerate = preview_regenerator if callable(preview_regenerator) else self.provider.regenerate_plan
+                    draft = regenerate(trip_input, preferences, companions, interests, context, candidates, request.reason, retry_instruction, current, request.feedback_codes)
                 finally:
                     logger.info(
                         "preview_provider_call request_id=%s plan_id=%s model=%s call=%s/%s elapsed_ms=%s",
@@ -354,10 +407,15 @@ class PlanRegenerationPreviewService:
                         MAX_FEEDBACK_GOAL_PROVIDER_CALLS, round((monotonic() - provider_started_at) * 1000),
                     )
                 draft = self.generation._normalize_draft_dates(draft, trip)
-                days = self.generation._validate_draft(self.generation._prepare_draft(draft, candidate_places, anchor_ids, trip), set(candidate_places))
-                self._validate_no_time_overlap(days)
+                # The trip's preferences, as in initial generation: a SLOW or
+                # rest-heavy trip keeps its REST slots out of meal repair.
+                days = self.generation._validate_draft(self.generation._prepare_draft(draft, candidate_places, anchor_ids, trip, preferences), set(candidate_places))
                 adjuster = getattr(self.generation, "_adjust_route_timing", None)
-                days = adjuster(days, candidate_places, trip) if adjuster is not None else days
+                # Same bounded repair as initial generation (reorder sights,
+                # trim flexible time, a verified closer restaurant, drop an
+                # optional sight); anchors are never touched and the result is
+                # revalidated below and by the feedback goal before saving.
+                days = adjuster(days, candidate_places, trip, anchor_ids, preferences, repair=True) if adjuster is not None else days
                 self._validate_no_time_overlap(days); self.generation._validate_temporal_draft(days, candidate_places)
                 legs = self.generation._validate_route_timing(days, candidate_places, trip) or {}; self.generation._validate_activity_diversity(days, candidate_places, trip)
                 included_anchors = {item.place_id for _, rows in days for item, _, _ in rows if item.place_id is not None}
@@ -401,7 +459,13 @@ class PlanRegenerationPreviewService:
                     self._rest_minutes(current), self._rest_minutes(proposed_items),
                 )
                 break
-            preview = self.previews.create(plan_id=plan.plan_id, user_id=user_id, base_version=plan.current_version, reason=request.reason, feedback_codes=list(request.feedback_codes), current_itinerary_snapshot={"items": current}, proposed_itinerary={"items": proposed_items}, diff=self._diff(current, proposed_items), expires_at=datetime.utcnow() + timedelta(minutes=get_settings().plan_regeneration_preview_ttl_minutes))
+            diff = self._diff(current, proposed_items)
+            if all(row["change_type"] == "UNCHANGED" for row in diff):
+                # TC-08: plan 38's rain proposal kept all 16 items (no indoor
+                # candidates).  An identical "proposal" only confuses; say so.
+                code = "WEATHER_NO_ALTERNATIVE" if request.reason == "WEATHER_CHANGE" else "PREVIEW_NO_CHANGES"
+                raise AppError(code, "The proposal is identical to the current itinerary", 422)
+            preview = self.previews.create(plan_id=plan.plan_id, user_id=user_id, base_version=plan.current_version, reason=request.reason, feedback_codes=list(request.feedback_codes), current_itinerary_snapshot={"items": current}, proposed_itinerary={"items": proposed_items}, diff=diff, expires_at=datetime.utcnow() + timedelta(minutes=get_settings().plan_regeneration_preview_ttl_minutes))
             self.session.commit()
         except AppError as exc:
             self.session.rollback()

@@ -9,7 +9,7 @@ from app.services.external.ai.exaone_preference_provider import ExaonePreference
 from app.services.external.ai.exaone_plan_provider import ExaonePlanGenerationProvider
 from app.services.external.content.mock_provider import MockContentProvider
 from app.services.external.content.youtube_provider import YouTubeContentProvider
-from app.services.external.factory import get_content_provider, get_place_provider, get_plan_generation_provider, get_preference_analysis_provider, get_naver_cafe_evidence_provider
+from app.services.external.factory import get_content_provider, get_place_provider, get_plan_generation_provider, get_plan_regeneration_preview_provider, get_preference_analysis_provider, get_naver_cafe_evidence_provider
 from app.services.external.naver_api_hub_provider import NaverApiHubProvider, UnavailableNaverCafeEvidenceProvider
 from app.services.external.place.mock_provider import MockPlaceProvider
 from app.services.external.place.kakao_provider import KakaoPlaceProvider
@@ -95,6 +95,8 @@ def test_naver_cafe_evidence_factory_logs_provider_state_without_credentials(cap
 def test_plan_factory_selects_exaone_real_provider():
     settings = Settings(plan_provider="real", exaone_base_url="http://127.0.0.1:11434", exaone_model="exaone-test")
     assert isinstance(get_plan_generation_provider(settings), ExaonePlanGenerationProvider)
+    assert get_plan_generation_provider(settings).timeout == 180
+    assert get_plan_regeneration_preview_provider(settings).timeout == 240
 
 
 def test_place_factory_selects_kakao_real_provider():

@@ -28,13 +28,22 @@ def fixed(minutes):
     return lambda _previous, _current: None if minutes is None else minutes * 60
 
 
-def test_short_gap_moves_the_next_visit_and_everything_after_it():
+def test_short_gap_moves_the_next_visit_and_a_later_gap_absorbs_the_delay():
     rows = [row(1, 1, "10:00", "11:00"), row(2, 2, "11:10", "12:00"), row(3, 3, "13:00", "14:00")]
 
     shifted = shift_day_for_travel(rows, fixed(25))
 
-    # 11:00 + 25 min -> 11:25; the 15-minute shift keeps the later gap too.
-    assert times(shifted) == [(1, "10:00", "11:00"), (2, "11:25", "12:15"), (3, "13:15", "14:15")]
+    # 11:00 + 25 min -> 11:25.  12:15 + 25 min = 12:40 still fits before
+    # 13:00, so the third visit keeps its time instead of inheriting +15.
+    assert times(shifted) == [(1, "10:00", "11:00"), (2, "11:25", "12:15"), (3, "13:00", "14:00")]
+
+
+def test_a_delay_still_cascades_when_no_gap_can_absorb_it():
+    rows = [row(1, 1, "10:00", "11:00"), row(2, 2, "11:10", "12:00"), row(3, 3, "12:20", "13:00")]
+
+    shifted = shift_day_for_travel(rows, fixed(25))
+
+    assert times(shifted) == [(1, "10:00", "11:00"), (2, "11:25", "12:15"), (3, "12:40", "13:20")]
     assert shifted[1][0].start_time == "11:25" and shifted[1][0].end_time == "12:15"
 
 
@@ -60,6 +69,15 @@ def test_unknown_leg_is_never_estimated():
     rows = [row(1, 1, "10:00", "11:00"), row(2, 2, "11:00", "12:00")]
 
     assert shift_day_for_travel(rows, fixed(None)) == rows
+
+
+def test_fixed_anchor_is_never_shifted_to_resolve_an_overlap():
+    rows = [row(1, 1, "10:00", "11:00"), row(2, 2, "10:30", "11:30")]
+
+    with pytest.raises(TravelShiftConflict) as error:
+        shift_day_for_travel(rows, fixed(None), fixed_place_ids={2})
+
+    assert error.value.kind == "ANCHOR_TIME_CONFLICT"
 
 
 def test_shift_past_day_end_fails_safely():

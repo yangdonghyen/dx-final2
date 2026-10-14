@@ -69,6 +69,24 @@ class ApiClient {
     return _decode(response);
   }
 
+  Future<Map<String, dynamic>> patch(
+    String path, {
+    Map<String, dynamic>? body,
+    String? accessToken,
+    Duration timeout = defaultTimeout,
+  }) async {
+    final response = await _client.patch(
+      Uri.parse('$baseUrl$path'),
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+      },
+      body: jsonEncode(body ?? <String, dynamic>{}),
+    ).timeout(timeout);
+
+    return _decode(response);
+  }
+
   Map<String, dynamic> _decode(http.Response response) {
     final decoded = jsonDecode(utf8.decode(response.bodyBytes));
 

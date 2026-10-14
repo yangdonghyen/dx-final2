@@ -200,6 +200,22 @@ class TripService {
     return TripCreateResult.fromJson(response);
   }
 
+  /// DELETE /api/v1/trips/{id}: the server archives the trip, so it leaves
+  /// every trip list; its data is kept, not erased.
+  Future<void> discard(int tripId) async {
+    await _apiClient.delete('/api/v1/trips/$tripId', accessToken: _accessToken);
+  }
+
+  /// Representative photo of a region, or null when none was found.
+  Future<String?> destinationImage(String destination) async {
+    final response = await _apiClient.get(
+      '/api/v1/destination-image?destination=${Uri.encodeQueryComponent(destination)}',
+      accessToken: _accessToken,
+    );
+    final url = response['image_url'];
+    return url is String && url.isNotEmpty ? url : null;
+  }
+
   Future<List<TripListItem>> list() async {
     final response = await _apiClient.get(
       '/api/v1/trips',

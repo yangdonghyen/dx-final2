@@ -97,6 +97,11 @@ class PlanItem(Base):
     recommendation_reason: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )
+    # The traveler's own description (UPDATE_ITEM); shown instead of the
+    # address line when set.  Migration 012.
+    user_note: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
     validation_status: Mapped[str] = mapped_column(
         Enum('VALID', 'WARNING', 'UNKNOWN', validate_strings=True), nullable=False, server_default=text("'UNKNOWN'")
     )

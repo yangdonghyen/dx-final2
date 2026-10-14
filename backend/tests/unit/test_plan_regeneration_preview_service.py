@@ -51,7 +51,7 @@ def service():
     svc.generation = SimpleNamespace(
         _input=lambda trip: ({}, {}, [], ["CULTURE"], {"raw_interest_codes": ["CULTURE"]}, [], {1}, candidate_places),
         _normalize_draft_dates=lambda value, trip: value,
-        _prepare_draft=lambda value, places, anchors, trip: value,
+        _prepare_draft=lambda value, places, anchors, trip, preferences=None: value,
         _validate_draft=lambda value, ids: [(date(2026, 1, 1), [(item, time.fromisoformat(item.start_time), time.fromisoformat(item.end_time)) for item in value.days[0].items]) if all(item.place_id is None or item.place_id in ids for item in value.days[0].items) else (_ for _ in ()).throw(AppError("AI_SCHEMA_VALIDATION_FAILED", "invalid", 502))],
         _validate_temporal_draft=lambda days, places: None,
         _validate_route_timing=lambda days, places, trip: None,
@@ -121,6 +121,24 @@ def test_preview_rejects_overlapping_times_without_persisting():
     draft.days[0].items[1] = PlanDraftItem(2, "REST", "Rest", None, "11:30", "12:30", "overlap")
     with pytest.raises(AppError) as error: svc.create(1, 10, PlanRegenerateRequest(reason="USER_FATIGUE", instruction="Less walking"))
     assert error.value.code == "TIME_CONFLICT" and saved == [] and plan.current_version == 4 and len(items) == 2
+
+
+def test_preview_uses_overlap_aware_provider_then_revalidates_before_saving():
+    svc, plan, _, items, _, saved, _, draft = service()
+    draft.days[0].items[1] = PlanDraftItem(2, "REST", "Rest", None, "11:30", "12:30", "overlap")
+    calls = []
+    svc.provider = SimpleNamespace(regenerate_preview_plan=lambda *args: calls.append(args) or draft)
+    from app.services.plan_travel_time import shift_day_for_travel
+    svc.generation._adjust_route_timing = lambda days, *_args, **_kwargs: [
+        (visit_date, shift_day_for_travel(rows, lambda _previous, _current: None))
+        for visit_date, rows in days
+    ]
+
+    response = svc.create(1, 10, PlanRegenerateRequest(reason="USER_FATIGUE", instruction="More rest", feedback_codes=["rest"]))
+
+    assert response.status == "PENDING" and len(calls) == 1 and len(saved) == 1
+    assert saved[0]["proposed_itinerary"]["items"][1]["start_time"] == "12:00:00"
+    assert plan.current_version == 4 and [item.item_id for item in items] == [100, 101]
 
 
 def test_preview_api_path_accepts_flutter_feedback_and_rejects_invalid_json():

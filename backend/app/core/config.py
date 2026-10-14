@@ -76,7 +76,18 @@ class Settings(BaseSettings):
     external_api_timeout_seconds: float = Field(default=10, gt=0)
     # A Tour hours lookup issues detailCommon2 + detailIntro2; image data is not fetched.
     tour_hours_max_places_per_request: int = Field(default=8, ge=0, le=30)
-    ai_api_timeout_seconds: float = Field(default=60, gt=0)
+    # Real EXAONE 7.8B plans measured 133--144 seconds for successful
+    # multi-day runs.  The provider still bounds output and retries only once;
+    # 180 seconds prevents the old 60-second default from rejecting normal
+    # responses before those safeguards can work.
+    ai_api_timeout_seconds: float = Field(default=180, gt=0)
+    # Preview regeneration has a separate, conservative ceiling because it
+    # carries the existing itinerary and can be slower than a fresh plan.
+    # It must not change the timeout of other EXAONE-backed features.
+    plan_regeneration_preview_ai_timeout_seconds: float = Field(default=240, gt=0)
+    # Opt-in: a folder for sanitised EXAONE plan answers used by replay tests
+    # (plan_ai_fixture). Unset means nothing is ever written.
+    plan_ai_fixture_dir: str | None = None
     plan_regeneration_preview_ttl_minutes: int = Field(default=30, gt=0, le=1440)
     # Meal start-time windows (HH:MM-HH:MM) the server checks plans against.
     plan_breakfast_window: str = "07:00-09:30"

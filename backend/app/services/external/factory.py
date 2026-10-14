@@ -134,7 +134,21 @@ def get_plan_generation_provider(settings: Settings | None = None):
     settings = settings or get_settings()
     if settings.plan_provider == "mock":
         return MockPlanGenerationProvider()
-    return ExaonePlanGenerationProvider(settings.exaone_base_url, settings.exaone_model, settings.ai_api_timeout_seconds, num_ctx=settings.exaone_num_ctx)
+    return ExaonePlanGenerationProvider(settings.exaone_base_url, settings.exaone_model, settings.ai_api_timeout_seconds, num_ctx=settings.exaone_num_ctx, fixture_dir=settings.plan_ai_fixture_dir)
+
+
+def get_plan_regeneration_preview_provider(settings: Settings | None = None):
+    """The preview endpoint alone gets its own Ollama request ceiling."""
+    settings = settings or get_settings()
+    if settings.plan_provider == "mock":
+        return MockPlanGenerationProvider()
+    return ExaonePlanGenerationProvider(
+        settings.exaone_base_url,
+        settings.exaone_model,
+        settings.plan_regeneration_preview_ai_timeout_seconds,
+        num_ctx=settings.exaone_num_ctx,
+        fixture_dir=settings.plan_ai_fixture_dir,
+    )
 
 
 def get_scene_recognition_provider(settings: Settings | None = None):
@@ -166,6 +180,10 @@ def provide_content_provider():
 
 def provide_preference_analysis_provider():
     return get_preference_analysis_provider()
+
+
+def provide_plan_regeneration_preview_provider():
+    return get_plan_regeneration_preview_provider()
 
 
 def provide_place_provider():

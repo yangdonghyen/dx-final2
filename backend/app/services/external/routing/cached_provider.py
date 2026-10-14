@@ -27,6 +27,11 @@ class CachedRouteProvider:
     - Calls made inside ``candidate_phase()`` have their own smaller cap so
       candidate filtering cannot consume the budget reserved for validating
       the final itinerary.
+    - ``limited_phase(n)`` gives one step (e.g. rest-cafe checks) its own
+      allowance of ``n`` calls inside the overall cap, so an earlier candidate
+      phase cannot leave it with no route facts at all.
+    - ``denied`` counts lookups refused by a budget, so callers can tell a
+      budget limit apart from a provider that had no route.
     """
 
     def __init__(
@@ -41,6 +46,8 @@ class CachedRouteProvider:
         self.calls = 0
         self.candidate_calls = 0
         self._candidate_depth = 0
+        self._limits: list[list[int]] = []
+        self.denied = 0
         self._cache: dict[tuple, RouteEstimate | None] = {}
 
     @contextmanager
@@ -51,6 +58,19 @@ class CachedRouteProvider:
         finally:
             self._candidate_depth -= 1
 
+    @contextmanager
+    def limited_phase(self, max_calls: int):
+        """Allow at most ``max_calls`` new provider calls inside this block.
+
+        These calls count toward the overall cap but not the candidate cap.
+        """
+        limit = [max(0, max_calls), 0]
+        self._limits.append(limit)
+        try:
+            yield self
+        finally:
+            self._limits.remove(limit)
+
     def _options(self) -> tuple:
         # Settings that change the inner provider's request for the same leg.
         return (type(self.inner).__name__, getattr(self.inner, "walking_route_mode", None))
@@ -58,6 +78,9 @@ class CachedRouteProvider:
     def _budget_available(self) -> bool:
         if self.calls >= self.max_calls:
             return False
+        if self._limits:
+            allowed, used = self._limits[-1]
+            return used < allowed
         return not (self._candidate_depth and self.candidate_calls >= self.max_candidate_calls)
 
     def route(
@@ -81,9 +104,12 @@ class CachedRouteProvider:
             self._cache[key] = estimate
             return estimate
         if not self._budget_available():
+            self.denied += 1
             return None
         self.calls += 1
-        if self._candidate_depth:
+        if self._limits:
+            self._limits[-1][1] += 1
+        elif self._candidate_depth:
             self.candidate_calls += 1
         estimate = self.inner.route(
             origin_latitude, origin_longitude, destination_latitude, destination_longitude, transport_mode

@@ -10,8 +10,9 @@ class HealthResponse(BaseModel):
 class ErrorDetail(BaseModel):
     code: str
     message: str
-    # Only safe identifiers (e.g. an existing plan_id); omitted when empty.
-    details: dict[str, int | str] | None = None
+    # Only safe identifiers (e.g. an existing plan_id) or lists of finding
+    # codes (e.g. {"codes": ["MISSING_LUNCH"]}); omitted when empty.
+    details: dict[str, int | str | list[str]] | None = None
 
 
 class ErrorResponse(BaseModel):

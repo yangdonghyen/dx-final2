@@ -20,7 +20,7 @@ import app.models
 def test_repository_has_initial_schema_and_interest_seed_migrations():
     config = Config(str(PROJECT_ROOT / "alembic.ini"))
     scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == ["011_trip_transport_mode_walk"]
+    assert scripts.get_heads() == ["012_plan_item_user_note"]
     assert scripts.get_revision("001_initial_schema").down_revision is None
     assert scripts.get_revision("002_seed_interest_codes").down_revision == "001_initial_schema"
     assert scripts.get_revision("003_setup_preferences").down_revision == "002_seed_interest_codes"
@@ -33,6 +33,7 @@ def test_repository_has_initial_schema_and_interest_seed_migrations():
     assert scripts.get_revision("009_trip_share_links").down_revision == "009_merge_legacy_road_addr"
     assert scripts.get_revision("010_plan_regeneration_previews").down_revision == "009_trip_share_links"
     assert scripts.get_revision("011_trip_transport_mode_walk").down_revision == "010_plan_regeneration_previews"
+    assert scripts.get_revision("012_plan_item_user_note").down_revision == "011_trip_transport_mode_walk"
 
 
 def test_alembic_template_and_offline_sql_without_database(tmp_path):
@@ -90,6 +91,7 @@ def test_initial_migration_matches_every_model_and_has_no_destructive_operations
                 ("trip_preferences", "travel_style"),
                 ("users", "password_hash"),
                 ("trip_companions", "member_user_id"),
+                ("plan_items", "user_note"),
             }
         ]
         if name != "user_auths":

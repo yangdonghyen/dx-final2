@@ -41,3 +41,9 @@ Thumbs.db
 /.task74b_pytest/
 /.task74c_mysql/
 *.bak*
+*.backup
+# USB(adb reverse)/LAN 개발용 dart-define 변형 파일 (키 포함, 커밋 금지)
+frontend/flutter/.dart_define.*.json
+!frontend/flutter/.dart_define.dev.example.json
+# Opt-in EXAONE replay fixtures captured locally (PLAN_AI_FIXTURE_DIR)
+backend/data/ai_fixtures/
