@@ -58,7 +58,8 @@ class WeatherNotificationService {
       final date = now ?? DateTime.now();
       final sentKey = _sentKey(date, condition);
       final preferences = await SharedPreferences.getInstance();
-      if (preferences.getBool(sentKey) ?? false) return;
+      // Once a day, except in the filming build where every take needs it.
+      if (!demoRain && (preferences.getBool(sentKey) ?? false)) return;
 
       final content = _notificationContent(condition);
       await _notifications.show(

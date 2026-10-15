@@ -502,10 +502,17 @@ class _HomeScreenState extends State<HomeScreen>
         longitude: position.longitude,
       );
       if (!mounted) return;
+      final rainy = const {'비', '비/눈', '눈', '소나기'}.contains(weather.current.condition);
       setState(() {
         _homeWeather = weather;
         _homeWeatherState = _HomeWeatherState.loaded;
+        // Rain on the trip: the alert card on Home and the phone notification
+        // both lead to the rain plan (계획 2).
+        if (rainy) _showRainAlert = true;
       });
+      if (rainy) {
+        unawaited(WeatherNotificationService.instance.notifyForWeather(weather, requestPermission: true));
+      }
     } catch (_) {
       if (!mounted) return;
       setState(() => _homeWeatherState = _HomeWeatherState.error);
@@ -909,7 +916,7 @@ class _HomeScreenState extends State<HomeScreen>
                           ),
                         ],
                       ),
-                      child: const Row(
+                      child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text('🌧️', style: TextStyle(fontSize: 30)),
@@ -928,7 +935,7 @@ class _HomeScreenState extends State<HomeScreen>
                                 ),
                                 SizedBox(height: 4),
                                 Text(
-                                  '강릉 지역에 비가 올 예정이에요.',
+                                  '${_homeWeather?.current.condition ?? '비'} 예보가 있어요.',
                                   style: TextStyle(
                                     fontSize: 16,
                                     fontWeight: FontWeight.w800,
@@ -936,7 +943,7 @@ class _HomeScreenState extends State<HomeScreen>
                                 ),
                                 SizedBox(height: 4),
                                 Text(
-                                  '강수확률 70% · 실내 중심 계획 2를 확인해보세요.',
+                                  '강수확률 ${_homeWeather?.current.precipitationProbability ?? '-'}% · 실내 중심 계획 2를 확인해보세요.',
                                   style: TextStyle(
                                     fontSize: 13,
                                     color: Color(0xFF4B5563),

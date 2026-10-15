@@ -29,6 +29,19 @@ class WeatherData {
   factory WeatherData.fromJson(Map<String, dynamic> json) => WeatherData(locationName: json['location_name'] as String, forecastBaseAt: DateTime.parse(json['forecast_base_at'] as String), current: CurrentWeather.fromJson(json['current'] as Map<String, dynamic>), daily: (json['daily'] as List? ?? const []).whereType<Map<String, dynamic>>().map(DailyWeather.fromJson).toList());
 }
 
+/// Filming build only (`--dart-define=DEMO_RAIN=true`): the current weather
+/// reads as rain so the rain flow (notification -> plan 2 -> proposal) can be
+/// shown on a dry day.  Never set in a normal build.
+const bool demoRain = bool.fromEnvironment('DEMO_RAIN');
+
+Map<String, dynamic> _withDemoRain(Map<String, dynamic> json) {
+  if (!demoRain) return json;
+  final current = Map<String, dynamic>.from(json['current'] as Map? ?? const {});
+  current['condition'] = '비';
+  current['precipitation_probability'] = 90;
+  return {...json, 'current': current};
+}
+
 class WeatherService {
   WeatherService({ApiClient? apiClient}) : _apiClient = apiClient ?? ApiClient();
   final ApiClient _apiClient;
@@ -52,6 +65,6 @@ class WeatherService {
       '/api/v1/weather?lat=$latitude&lon=$longitude',
       accessToken: _accessToken,
     );
-    return WeatherData.fromJson(response);
+    return WeatherData.fromJson(_withDemoRain(response));
   }
 }
