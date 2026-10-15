@@ -95,6 +95,7 @@ class _UpcomingTripsScreenState extends State<UpcomingTripsScreen> {
         tripDates: dates,
         selectedTransport: const <String>{},
         selectedPlaces: places,
+        tripName: ActiveTripService.nameFor(title: trip.title, destination: trip.destination),
       );
       await Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => ItineraryScreen(
@@ -120,7 +121,7 @@ class _UpcomingTripsScreenState extends State<UpcomingTripsScreen> {
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: AppColors.bg,
-    appBar: AppBar(title: const Text('예정 여행')),
+    appBar: AppBar(title: const Text('내 여행 일정')),
     body: _loading
         ? const Center(child: CircularProgressIndicator())
         : _error != null

@@ -26,7 +26,15 @@ class YoutubeSavedScreen extends StatefulWidget {
 
 class _YoutubeSavedScreenState extends State<YoutubeSavedScreen> {
   final YouTubeSavedDiscoveryService _service = YouTubeSavedDiscoveryService();
+  /// One card per video: the newest save of it (a video paused at several
+  /// points used to show up once per pause).
   List<YouTubeSavedDiscovery> _discoveries = const [];
+  List<YouTubeSavedDiscovery> _allSaves = const [];
+
+  static List<YouTubeSavedDiscovery> latestPerVideo(List<YouTubeSavedDiscovery> saves) {
+    final seen = <String>{};
+    return [for (final save in saves) if (seen.add(save.videoId)) save];
+  }
   bool _loading = true;
   Object? _error;
 
@@ -45,7 +53,8 @@ class _YoutubeSavedScreenState extends State<YoutubeSavedScreen> {
       final discoveries = await _service.list();
       if (!mounted) return;
       setState(() {
-        _discoveries = discoveries;
+        _allSaves = discoveries;
+        _discoveries = latestPerVideo(discoveries);
         _loading = false;
       });
     } catch (error) {
@@ -80,12 +89,14 @@ class _YoutubeSavedScreenState extends State<YoutubeSavedScreen> {
     );
     if (shouldDelete != true || !mounted) return;
     try {
-      await _service.delete(item.savedDiscoveryId);
+      // The card stands for every save of this video, so all of them go.
+      for (final save in _allSaves.where((saved) => saved.videoId == item.videoId)) {
+        await _service.delete(save.savedDiscoveryId);
+      }
       if (!mounted) return;
       setState(() {
-        _discoveries = _discoveries
-            .where((saved) => saved.savedDiscoveryId != item.savedDiscoveryId)
-            .toList();
+        _allSaves = _allSaves.where((saved) => saved.videoId != item.videoId).toList();
+        _discoveries = latestPerVideo(_allSaves);
       });
     } catch (_) {
       if (!mounted) return;

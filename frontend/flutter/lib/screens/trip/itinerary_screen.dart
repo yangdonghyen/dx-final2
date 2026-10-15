@@ -2264,7 +2264,11 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          widget.places.isEmpty
+                          // "강릉 여행 일정": the trip's own name when this is the
+                          // saved trip, not its first stop ("정동진 해변 여행").
+                          _plan != null && _plan!.planId == ActiveTripService.planId && ActiveTripService.name != null
+                              ? '${ActiveTripService.name} 일정'
+                              : widget.places.isEmpty
                               ? '전체 일정'
                               : '${widget.places.first} 여행 일정',
                           style: TextStyle(

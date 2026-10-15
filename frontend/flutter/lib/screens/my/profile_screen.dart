@@ -8,7 +8,6 @@ import '../../services/trip_service.dart';
 import '../../services/youtube_saved_discovery_service.dart';
 import '../auth/login_screen.dart';
 import '../preference/youtube_saved_screen.dart';
-import '../travel/today_travel_screen.dart';
 import 'past_trips_screen.dart';
 
 /// 웹 앱의 최신 마이페이지 구조를 반영한 Flutter 화면이다.
@@ -415,7 +414,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     Icons.calendar_month_outlined,
                     '내 여행 일정',
                     const Color(0xFF4169D8),
-                    () => _push(const TodayTravelScreen()),
+                    () => _push(const UpcomingTripsScreen()),
                   ),
                   _menu(
                     Icons.flight_takeoff_outlined,
@@ -508,7 +507,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           _basicMenu(
             Icons.calendar_month_outlined,
             '내 여행 일정',
-            () => _push(const TodayTravelScreen()),
+            () => _push(const UpcomingTripsScreen()),
           ),
           _basicMenu(Icons.flight_takeoff_outlined, '지난 여행', _openPastTrips),
           _basicMenu(Icons.bookmark_outline, '저장한 장소', _openSavedPlaces),

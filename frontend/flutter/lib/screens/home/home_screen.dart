@@ -1039,7 +1039,9 @@ class _HomeScreenState extends State<HomeScreen>
         : daysUntilDeparture == 0
         ? 'D-Day'
         : 'D-$daysUntilDeparture';
-    final tripName = hasTrip ? '${ActiveTripService.places.first} 여행' : '새 여행';
+    final tripName = hasTrip
+        ? ActiveTripService.name ?? '${ActiveTripService.places.first} 여행'
+        : '새 여행';
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
@@ -1320,7 +1322,7 @@ class _HomeScreenState extends State<HomeScreen>
                         const SizedBox(height: 5),
                         Text(
                           hasTrip
-                              ? '확정한 일정과 이동 경로를 확인하세요.'
+                              ? '저장한 일정과 이동 경로를 확인하세요.'
                               : '지금 여행 계획을 시작해보세요.',
                           style: const TextStyle(
                             color: Color(0xFFE7EDFF),

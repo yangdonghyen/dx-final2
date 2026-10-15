@@ -57,6 +57,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(plans.opened, [93, 92]);
     expect(find.byType(ItineraryScreen), findsOneWidget);
-    expect(find.textContaining('함덕해수욕장'), findsWidgets);
+    expect(find.text('제주 여행 일정'), findsOneWidget); // the trip's name, not its first stop
   });
 }

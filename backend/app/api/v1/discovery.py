@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
 
 from app.dependencies import CurrentUser
 from app.db.session import get_db
@@ -182,8 +182,32 @@ def save_youtube_discovery(
     request: YouTubeSavedDiscoveryCreate,
     user: CurrentUser,
     service: YouTubeSavedDiscoveryServiceDependency,
+    background_tasks: BackgroundTasks,
 ):
-    return service.save(user.user_id, request)
+    saved = service.save(user.user_id, request)
+    destination = (getattr(saved, "destination_name", None) or "").strip()
+    if destination:
+        # Recommendations take ~50 s (EXAONE); prepare them now so the saved
+        # video's detail screen shows them at once.
+        background_tasks.add_task(_prewarm_recommendations, user.user_id, saved.saved_discovery_id, destination)
+    return saved
+
+
+def _prewarm_recommendations(user_id: int, saved_discovery_id: int, destination: str) -> None:
+    from app.db.session import SessionLocal
+
+    session = SessionLocal()
+    try:
+        YouTubeDestinationRecommendationService(
+            session,
+            get_tour_destination_image_provider(),
+            get_youtube_destination_recommendation_selector,
+            get_content_provider(),
+        ).recommend(user_id, saved_discovery_id, destination)
+    except Exception as error:  # a warm-up only; the screen asks again
+        logging.getLogger("uvicorn.error").info("youtube_recommendation_prewarm_failed reason=%s", type(error).__name__)
+    finally:
+        session.close()
 
 
 @router.get(

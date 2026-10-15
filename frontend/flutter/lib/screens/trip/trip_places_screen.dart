@@ -608,6 +608,7 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
       selectedCompanions: _selectedCompanions.map(
         (companion) => ActiveTripCompanion(name: companion.name),
       ),
+      tripName: ActiveTripService.nameFor(destination: _tripDestination),
     );
 
     Navigator.of(context).pushReplacement(

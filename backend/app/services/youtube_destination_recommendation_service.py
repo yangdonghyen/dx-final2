@@ -24,11 +24,13 @@ from app.services.youtube_destination_recommendation_selector import (
 
 
 class YouTubeDestinationRecommendationService:
+    # Keyed by (video, destination): every save of the same video (one per
+    # pause) shares one result instead of a fresh ~50 s EXAONE selection.
     _cache: OrderedDict[
-        tuple[int, str, str], tuple[float, DestinationRecommendationsResponse]
+        tuple[str, str], tuple[float, DestinationRecommendationsResponse]
     ] = OrderedDict()
     _cache_lock = RLock()
-    _cache_ttl_seconds = 900
+    _cache_ttl_seconds = 6 * 3600
     _cache_max_entries = 256
 
     def __init__(
@@ -47,7 +49,7 @@ class YouTubeDestinationRecommendationService:
     @classmethod
     def _cached(
         cls,
-        key: tuple[int, str, str],
+        key: tuple[str, str],
     ) -> DestinationRecommendationsResponse | None:
         now = time.monotonic()
         with cls._cache_lock:
@@ -180,7 +182,7 @@ class YouTubeDestinationRecommendationService:
             or self.destination_resolver.resolve(requested_destination)
             or requested_destination.strip()
         )
-        cache_key = (saved_discovery_id, discovery.video_id, destination)
+        cache_key = (discovery.video_id, destination)
         cached = self._cached(cache_key)
         if cached is not None:
             return cached

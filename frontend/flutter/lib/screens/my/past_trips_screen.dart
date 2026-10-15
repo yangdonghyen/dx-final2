@@ -130,6 +130,7 @@ class _PastTripsScreenState extends State<PastTripsScreen> {
         tripDates: dates,
         selectedTransport: const <String>{},
         selectedPlaces: places,
+        tripName: ActiveTripService.nameFor(title: trip.title, destination: trip.destination),
       );
 
       await Navigator.of(context).push(

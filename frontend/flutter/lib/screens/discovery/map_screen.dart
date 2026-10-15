@@ -32,6 +32,7 @@ class _MapScreenState extends State<MapScreen> {
   String selectedCategory = '';
   Map<String, dynamic>? selectedPlace;
   String status = '카카오맵을 준비하고 있어요.';
+  String _searchLabel = '장소';
 
   @override
   void initState() {
@@ -45,7 +46,15 @@ class _MapScreenState extends State<MapScreen> {
         onMessageReceived: (message) {
           try {
             final decoded = jsonDecode(message.message);
-            if (decoded is Map && mounted) {
+            if (decoded is Map && decoded['type'] == 'count' && mounted) {
+              // How many places the category search put on the map.
+              final count = decoded['count'] is num ? (decoded['count'] as num).toInt() : 0;
+              setState(() {
+                status = count > 0
+                    ? '현재 위치 주변 $_searchLabel $count곳을 찾았어요.'
+                    : '현재 위치 주변에서 ${withObjectParticle(_searchLabel)} 찾지 못했어요.';
+              });
+            } else if (decoded is Map && mounted) {
               setState(() {
                 selectedPlace = Map<String, dynamic>.from(decoded);
               });
@@ -124,10 +133,7 @@ class _MapScreenState extends State<MapScreen> {
 
       setState(() {
         locating = false;
-        status =
-            '현재 위치: '
-            '${latitude.toStringAsFixed(5)}, '
-            '${longitude.toStringAsFixed(5)}';
+        status = '현재 위치를 찾았어요. 카페·음식점·관광지를 눌러 주변을 둘러보세요.';
       });
 
       await _moveMap(latitude, longitude);
@@ -190,11 +196,12 @@ class _MapScreenState extends State<MapScreen> {
         category = 'CE7';
     }
 
+    _searchLabel = label;
     if (mounted) {
       setState(() {
         selectedCategory = category;
         selectedPlace = null;
-        status = '현재 위치 주변 $label를 찾고 있어요.';
+        status = '현재 위치 주변 ${withObjectParticle(label)} 찾고 있어요.';
       });
     }
 
@@ -362,8 +369,10 @@ function searchCategory(categoryCode) {
         status !==
         kakao.maps.services.Status.OK
       ) {
+        PlaceChannel.postMessage(JSON.stringify({ type: 'count', count: 0 }));
         return;
       }
+      PlaceChannel.postMessage(JSON.stringify({ type: 'count', count: Math.min(data.length, 10) }));
 
       const bounds =
         new kakao.maps.LatLngBounds();
@@ -773,4 +782,12 @@ class _PlaceCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// "음식점을", "카페를": 을 after a final consonant, 를 otherwise.
+String withObjectParticle(String word) {
+  if (word.isEmpty) return word;
+  final code = word.codeUnitAt(word.length - 1);
+  if (code < 0xAC00 || code > 0xD7A3) return '$word을(를)';
+  return (code - 0xAC00) % 28 == 0 ? '$word를' : '$word을';
 }

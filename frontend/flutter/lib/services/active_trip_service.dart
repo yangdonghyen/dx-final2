@@ -21,6 +21,7 @@ class ActiveTripService {
   static const _endKey = 'active_trip_end';
   static const _transportKey = 'active_trip_transport';
   static const _placesKey = 'active_trip_places';
+  static const _nameKey = 'active_trip_name';
 
   /// Backend trip_id of the confirmed trip; null until the server saved it.
   static int? tripId;
@@ -32,6 +33,18 @@ class ActiveTripService {
   static List<String> places = <String>[];
   static List<ActiveTripCompanion> companions = <ActiveTripCompanion>[];
 
+  /// "강릉 여행": the trip's title or destination.  Null for trips saved
+  /// before this was kept; Home then falls back to the first place.
+  static String? name;
+
+  /// Trip title if set, else "(destination) 여행", else null.
+  static String? nameFor({String? title, String? destination}) {
+    final clean = title?.trim();
+    if (clean != null && clean.isNotEmpty) return clean;
+    final place = destination?.trim();
+    return place == null || place.isEmpty ? null : '$place 여행';
+  }
+
   /// Increments whenever a trip is confirmed so visible home cards refresh.
   static final ValueNotifier<int> revision = ValueNotifier<int>(0);
 
@@ -42,8 +55,10 @@ class ActiveTripService {
     required Set<String> selectedTransport,
     required Iterable<String> selectedPlaces,
     Iterable<ActiveTripCompanion> selectedCompanions = const [],
+    String? tripName,
   }) {
     tripId = savedTripId;
+    name = tripName;
     planId = savedPlanId;
     dates = tripDates;
     transport = Set<String>.of(selectedTransport);
@@ -71,6 +86,7 @@ class ActiveTripService {
       transport = (preferences.getStringList(_transportKey) ?? const [])
           .toSet();
       places = preferences.getStringList(_placesKey) ?? <String>[];
+      name = preferences.getString(_nameKey);
     } catch (error) {
       debugPrint('[ActiveTrip] restore failed: $error');
     }
@@ -84,6 +100,7 @@ class ActiveTripService {
     transport = <String>{};
     places = <String>[];
     companions = <ActiveTripCompanion>[];
+    name = null;
     revision.value++;
     final preferences = await SharedPreferences.getInstance();
     for (final key in [
@@ -93,6 +110,7 @@ class ActiveTripService {
       _endKey,
       _transportKey,
       _placesKey,
+      _nameKey,
     ]) {
       await preferences.remove(key);
     }
@@ -122,5 +140,11 @@ class ActiveTripService {
     }
     await preferences.setStringList(_transportKey, transport.toList());
     await preferences.setStringList(_placesKey, places);
+    final tripName = name;
+    if (tripName == null) {
+      await preferences.remove(_nameKey);
+    } else {
+      await preferences.setString(_nameKey, tripName);
+    }
   }
 }

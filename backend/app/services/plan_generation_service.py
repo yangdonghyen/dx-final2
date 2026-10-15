@@ -290,6 +290,16 @@ REST_CAFE_ROUTE_CALLS = 12
 # measured per meal, and the verified travel a swap must save.
 FAR_MEAL_ROUTE_CALLS = 8
 FAR_MEAL_ALTERNATIVES = 3
+FAR_MEAL_SEARCH_METERS = 3000
+FAR_MEAL_SEARCH_LIMIT = 8
+# A daytime hole this long (trip 109: 15:00-17:30 before dinner) gets one
+# more verified, unused sight from the pool when real routes and opening
+# hours fit; otherwise the day is left as it was.
+GAP_FILL_MIN_MINUTES = 120
+GAP_FILL_STAY_MINUTES = (45, 90)
+GAP_FILL_MAX_METERS = 15000
+GAP_FILL_BUFFER_MINUTES = 10
+GAP_FILL_REASON = "빈 시간에 가까운 관광지를 넣었어요."
 FAR_MEAL_MIN_GAIN_SECONDS = 15 * 60
 FAR_MEAL_REASON = "원래 식당이 앞뒤 일정과 멀어, 실제 이동시간이 확인된 더 가까운 식당으로 바꿨습니다."
 ROUTE_REPAIR_RESTAURANT_REASON = (
@@ -319,6 +329,15 @@ _GENERIC_CAFE_CATEGORY_LEAVES = frozenset({
 _GENERIC_CAFE_CATEGORY_SUFFIXES = ("\uce74\ud398",)
 
 BLOCKED_PLAN_PLACE_KEYWORDS = (
+    # Bars are not meals or sights for a family trip ("안목해변술집 문문" was
+    # picked as dinner twice on 2026-10-15; Kakao filed it under 일식).
+    "술집",
+    "주점",
+    "호프",
+    "포장마차",
+    "이자카야",
+    "칵테일바",
+    "와인바",
     "행정봉사실",
     "행정복지센터",
     "주민센터",
@@ -1721,6 +1740,12 @@ class PlanGenerationService:
                     if position + 1 < len(located):
                         neighbours.append((candidate_places[located[position + 1].place_id], False))
                     nearest = finding["nearest_stop_m"]
+                    # The pool may hold no restaurant near this part of the day
+                    # (trip 109: dinner 12 km from the last stop, "no closer
+                    # candidate").  Look up verified restaurants around the
+                    # previous stop first; they join the pool like any other.
+                    for found in self._restaurants_near(neighbours[0][0] if neighbours else None, trip, used):
+                        candidate_places.setdefault(found.place_id, found)
                     alternatives = sorted(
                         (sum(gap(place, other) for other, _ in neighbours), place_id)
                         for place_id, place in candidate_places.items()
@@ -1757,6 +1782,100 @@ class PlanGenerationService:
                 self.last_far_meal_review.append(outcome)
                 logger.info("plan_far_meal_review trip_id=%s %s", trip_id, outcome)
         return draft
+
+    def _fill_long_gaps(self, days, candidate_places, trip):
+        """Insert one unused verified sight into each long daytime gap.
+
+        Only when the route provider gives both legs, the visit fits with a
+        buffer before the next stop, and verified hours do not exclude it.
+        Returns ``days`` itself when nothing changed; the caller re-validates
+        a changed plan and keeps the original if anything fails.
+        """
+        if self.route_provider is None or isinstance(self.route_provider, UnavailableRouteProvider):
+            return days
+        mode = getattr(trip, "transport_mode", None)
+        used = {item.place_id for _, rows in days for item, _, _ in rows if item.place_id is not None}
+        changed = False
+        result = []
+
+        def minutes(value):
+            return value.hour * 60 + value.minute
+
+        def leg_minutes(first, second):
+            estimate = self._route_estimate(first, second, mode)
+            duration = getattr(estimate, "duration_seconds", None)
+            return -(-duration // 60) if isinstance(duration, int) and duration > 0 else None
+
+        for visit_date, rows in days:
+            rows = list(rows)
+            index = 0
+            while index + 1 < len(rows):
+                previous, start_prev, end_prev = rows[index]
+                following, start_next, _ = rows[index + 1]
+                before = candidate_places.get(previous.place_id) if previous.place_id else None
+                after = candidate_places.get(following.place_id) if following.place_id else None
+                gap = minutes(start_next) - minutes(end_prev)
+                if before is None or after is None or gap < GAP_FILL_MIN_MINUTES or minutes(end_prev) < 10 * 60:
+                    index += 1
+                    continue
+                options = sorted(
+                    (distance_meters(before, place), place_id)
+                    for place_id, place in candidate_places.items()
+                    if place_id not in used and not _is_food_or_cafe(place) and not is_event_candidate(place)
+                    and distance_meters(before, place) is not None and distance_meters(before, place) <= GAP_FILL_MAX_METERS
+                )[:3]
+                inserted = False
+                for _, place_id in options:
+                    place = candidate_places[place_id]
+                    go, back = leg_minutes(before, place), leg_minutes(place, after)
+                    if go is None or back is None:
+                        continue
+                    arrive = minutes(end_prev) + go
+                    arrive += (-arrive) % 5
+                    stay = min(GAP_FILL_STAY_MINUTES[1], minutes(start_next) - back - GAP_FILL_BUFFER_MINUTES - arrive)
+                    if stay < GAP_FILL_STAY_MINUTES[0]:
+                        continue
+                    start = time(arrive // 60, arrive % 60)
+                    end = time((arrive + stay) // 60, (arrive + stay) % 60)
+                    if opening_hours_match(place, visit_date, start, end) is False:
+                        continue
+                    item = PlanDraftItem(0, self._canonical_item_type(place), place.name, place_id,
+                                         start.strftime("%H:%M"), end.strftime("%H:%M"), GAP_FILL_REASON)
+                    rows.insert(index + 1, (item, start, end))
+                    used.add(place_id)
+                    changed = inserted = True
+                    logger.info("plan_gap_filled trip_id=%s visit_date=%s place_id=%s start=%s end=%s gap_minutes=%s",
+                                getattr(trip, "trip_id", None), visit_date, place_id, start, end, gap)
+                    break
+                index += 2 if inserted else 1
+            result.append((visit_date, [
+                (replace(item, sequence=number), start, end) for number, (item, start, end) in enumerate(rows, start=1)
+            ]))
+        return result if changed else days
+
+    def _restaurants_near(self, origin, trip, used):
+        """Verified restaurants within FAR_MEAL_SEARCH_METERS of ``origin``
+        (Kakao FD6, upserted like every other candidate; bars are filtered by
+        the usual candidate rules).  Provider failures return nothing."""
+        if origin is None or self.place_provider is None or not hasattr(self.place_provider, "search_nearby"):
+            return []
+        if getattr(origin, "latitude", None) is None or getattr(origin, "longitude", None) is None:
+            return []
+        try:
+            found = self.place_provider.search_nearby(
+                float(origin.latitude), float(origin.longitude), FAR_MEAL_SEARCH_METERS, ["FD6"], FAR_MEAL_SEARCH_LIMIT
+            )
+            upserted = PlaceSearchService(self.session, self.place_provider, commit=False).upsert_candidates(found, trip.destination) if found else []
+        except AppError:
+            return []
+        places = [self.places.get(row.place_id) for row in upserted]
+        return [
+            place for place in places
+            if place is not None and place.place_id not in used
+            and is_restaurant(place) and _is_usable_plan_candidate(place)
+            and place.latitude is not None and place.longitude is not None
+            and self._is_temporally_eligible(place, trip)
+        ]
 
     def _rest_cafe_leg(self, first, second, transport_mode):
         """A verified leg to or from a rest cafe.
@@ -1819,7 +1938,12 @@ class PlanGenerationService:
         days = []
         for day in draft.days:
             items = list(day.items)
-            chosen_today = False
+            # One cafe a day is enough: a day that already visits a cafe keeps
+            # its rest as a plain rest (2026-10-15: three cafes in two days).
+            chosen_today = any(
+                item.place_id is not None and is_cafe(candidate_places.get(item.place_id))
+                for item in items
+            )
             for index, slot in enumerate(items):
                 if chosen_today or slot.item_type != "REST" or slot.place_id is not None:
                     continue
@@ -2917,6 +3041,15 @@ class PlanGenerationService:
             self._validate_temporal_draft(days, candidate_places)
             legs = self._validate_route_timing(days, candidate_places, trip) or {}
             self._validate_activity_diversity(days, candidate_places, trip)
+            filled = self._fill_long_gaps(days, candidate_places, trip)
+            if filled is not days:
+                try:
+                    self._validate_temporal_draft(filled, candidate_places)
+                    filled_legs = self._validate_route_timing(filled, candidate_places, trip) or {}
+                    days, legs = filled, filled_legs
+                except AppError as error:
+                    logger.info("plan_gap_fill_reverted trip_id=%s code=%s", trip_id, error.code)
+            stage("gap_fill")
             # The production factory wraps a configured route provider in this
             # request-scoped cache.  Only then do we have the route-fact contract
             # required to reject a missing meal instead of guessing a restaurant.
