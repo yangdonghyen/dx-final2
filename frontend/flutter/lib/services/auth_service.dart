@@ -170,6 +170,28 @@ class AuthService {
     );
   }
 
+  /// Any request that got 401: a new access token from the stored refresh
+  /// token, or null (the user then has to log in again).
+  Future<String?> refreshAccessToken() async {
+    final refresh = AuthSession.refreshToken;
+    if (refresh == null || refresh.isEmpty) return null;
+    try {
+      final response = await _apiClient.post('/api/v1/auth/refresh', body: {'refresh_token': refresh});
+      final access = response['access_token'];
+      final rotated = response['refresh_token'];
+      if (access is! String || access.isEmpty) return null;
+      await AuthSession.store(
+        accessToken: access,
+        refreshToken: rotated is String && rotated.isNotEmpty ? rotated : refresh,
+        displayName: AuthSession.displayName,
+      );
+      return access;
+    } catch (error) {
+      debugPrint('[Auth] token refresh failed: $error');
+      return null;
+    }
+  }
+
   /// Auto login: trades the saved refresh token for a fresh access token.
   /// Returns false (and keeps the user on the login screen) when it fails.
   Future<bool> resumeSession() async {

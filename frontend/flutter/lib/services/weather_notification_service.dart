@@ -21,14 +21,17 @@ class WeatherNotificationService {
       FlutterLocalNotificationsPlugin();
   Future<void>? _initialization;
 
-  /// True after the user taps a rain notification (app running or cold
-  /// start).  Home opens the rain plan (계획 2) once signed in, then resets it.
-  final ValueNotifier<bool> rainPlanRequested = ValueNotifier(false);
+  /// The weather plan to open after the user taps a weather notification
+  /// (app running or cold start): 2 for rain, 3 for a heat wave, 0 for none.
+  /// Home opens it once signed in, then resets it.
+  final ValueNotifier<int> weatherPlanRequested = ValueNotifier(0);
 
   static const _payload = 'weather';
+  static const _heatPayload = 'weather_heat';
 
   void _onTap(NotificationResponse response) {
-    if (response.payload == _payload) rainPlanRequested.value = true;
+    if (response.payload == _payload) weatherPlanRequested.value = 2;
+    if (response.payload == _heatPayload) weatherPlanRequested.value = 3;
   }
 
   Future<void> initialize() => _ensureInitialized();
@@ -38,8 +41,9 @@ class WeatherNotificationService {
     DateTime? now,
     bool requestPermission = false,
   }) async {
-    final condition = weather.current.condition;
-    if (condition == null || !_precipitationConditions.contains(condition)) {
+    final heat = !isRainyWeather(weather) && isHeatWave(weather);
+    final condition = heat ? '폭염' : weather.current.condition;
+    if (condition == null || !(heat || _precipitationConditions.contains(condition))) {
       return;
     }
 
@@ -59,7 +63,7 @@ class WeatherNotificationService {
       final sentKey = _sentKey(date, condition);
       final preferences = await SharedPreferences.getInstance();
       // Once a day, except in the filming build where every take needs it.
-      if (!demoRain && (preferences.getBool(sentKey) ?? false)) return;
+      if (!demoWeatherOn && (preferences.getBool(sentKey) ?? false)) return;
 
       final content = _notificationContent(condition);
       await _notifications.show(
@@ -75,7 +79,7 @@ class WeatherNotificationService {
             priority: Priority.high,
           ),
         ),
-        payload: _payload,
+        payload: heat ? _heatPayload : _payload,
       );
       await preferences.setBool(sentKey, true);
     } catch (_) {
@@ -142,6 +146,10 @@ class WeatherNotificationService {
         '소나기' => const _NotificationContent(
           '오늘 소나기가 와요',
           '현재 위치에 소나기 예보가 있어요. 실내 중심 여행 계획을 확인해보세요.',
+        ),
+        '폭염' => const _NotificationContent(
+          '오늘 폭염이에요',
+          '현재 위치의 기온이 매우 높아요. 실내 중심 계획 3을 확인해보세요.',
         ),
         _ => throw ArgumentError.value(condition, 'condition'),
       };

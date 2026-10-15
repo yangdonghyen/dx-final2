@@ -23,6 +23,44 @@ MAX_FEEDBACK_GOAL_PROVIDER_CALLS = 2
 
 
 
+def candidate_row(place, anchor_ids, indoor=False):
+    row = {
+        "place_id": place.place_id,
+        "name": place.name,
+        "category": place.category,
+        "region": place.region,
+        "address": place.address,
+        "latitude": place.latitude,
+        "longitude": place.longitude,
+        "is_anchor": place.place_id in anchor_ids,
+        "activity_kind": "FOOD_OR_CAFE" if _is_food_or_cafe(place) else "NON_FOOD_ACTIVITY",
+        "opening_hours": verified_hours(place),
+        "event_start_date": getattr(place, "event_start_date", None),
+        "event_end_date": getattr(place, "event_end_date", None),
+    }
+    if indoor:
+        row["indoor"] = True
+    return row
+
+
+def with_indoor_places(generation, candidates, candidate_places, anchor_ids, trip):
+    """Rain or heat: add verified indoor places of the destination so the
+    model has somewhere indoors to move outdoor stops (trip 107: the pool had
+    beaches and parks only, and the rain proposal could not go indoors)."""
+    finder = getattr(generation, "indoor_candidates", None)
+    if finder is None:
+        return candidates, candidate_places
+    candidates, candidate_places = [dict(row) for row in candidates], dict(candidate_places)
+    for row in candidates:
+        place = candidate_places.get(row.get("place_id"))
+        if place is not None and PlanGenerationService.is_indoor(place):
+            row["indoor"] = True
+    for place in finder(trip, set(candidate_places)):
+        candidate_places[place.place_id] = place
+        candidates.append(candidate_row(place, anchor_ids, indoor=True))
+    return candidates, candidate_places
+
+
 def with_current_places(generation, current, candidates, candidate_places, anchor_ids, trip):
     """Add the places of the stored itinerary to the preview's candidates.
 
@@ -48,20 +86,7 @@ def with_current_places(generation, current, candidates, candidate_places, ancho
         if not PlanGenerationService._is_temporally_eligible(place, trip):
             continue
         candidate_places[place_id] = place
-        candidates.append({
-            "place_id": place.place_id,
-            "name": place.name,
-            "category": place.category,
-            "region": place.region,
-            "address": place.address,
-            "latitude": place.latitude,
-            "longitude": place.longitude,
-            "is_anchor": place.place_id in anchor_ids,
-            "activity_kind": "FOOD_OR_CAFE" if _is_food_or_cafe(place) else "NON_FOOD_ACTIVITY",
-            "opening_hours": verified_hours(place),
-            "event_start_date": getattr(place, "event_start_date", None),
-            "event_end_date": getattr(place, "event_end_date", None),
-        })
+        candidates.append(candidate_row(place, anchor_ids))
         added.append(place_id)
     if added:
         logger.info("preview_current_places_added request_id=%s place_ids=%s", current_request_id(), added)
@@ -69,12 +94,16 @@ def with_current_places(generation, current, candidates, candidate_places, ancho
 
 
 class PlanRegenerationPreviewService:
-    def __init__(self, session, provider, route_provider=None):
+    def __init__(self, session, provider, route_provider=None, place_provider=None):
         self.session = session; self.provider = provider
         self.plans = PlanRepository(session); self.items = PlanItemRepository(session)
         self.previews = PlanRegenerationPreviewRepository(session); self.trips = TripRepository(session)
-        # Candidate discovery can upsert places. A preview may commit only its own row.
+        # Candidate discovery can upsert places. A preview rebuilds the same
+        # pool as generation without searching ...
         self.generation = PlanGenerationService(session, provider, place_provider=None, route_provider=route_provider)
+        # ... except the indoor search of a weather (rain/heat) proposal; the
+        # verified places it finds are stored with the preview.
+        self.indoor = PlanGenerationService(session, provider, place_provider=place_provider) if place_provider is not None else None
 
     def _owned_plan(self, user_id, plan_id):
         plan = self.plans.get(plan_id)
@@ -392,6 +421,8 @@ class PlanRegenerationPreviewService:
         try:
             trip_input, preferences, companions, interests, context, candidates, anchor_ids, candidate_places = self.generation._input(trip)
             candidates, candidate_places = self._with_current_places(current, candidates, candidate_places, anchor_ids, trip)
+            if request.reason == "WEATHER_CHANGE":
+                candidates, candidate_places = with_indoor_places(getattr(self, "indoor", None) or self.generation, candidates, candidate_places, anchor_ids, trip)
             retry_instruction = request.instruction
             for attempt in range(MAX_FEEDBACK_GOAL_PROVIDER_CALLS):
                 provider_started_at = monotonic()

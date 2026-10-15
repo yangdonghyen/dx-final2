@@ -121,3 +121,33 @@ def test_identical_weather_proposal_is_reported_not_saved():
             svc.create(1, 10, PlanRegenerateRequest(reason=reason, instruction="Move indoors"))
         assert error.value.code == code and error.value.status_code == 422
     assert saved == [] and plan.current_version == 4 and len(items) == 2
+
+
+def test_weather_previews_add_verified_indoor_places_and_others_do_not():
+    """Rain/heat (trip 107): the pool had beaches and parks only."""
+    from types import SimpleNamespace
+    from app.services.plan_regeneration_preview_service import with_indoor_places
+    from app.services.plan_generation_service import PlanGenerationService
+
+    museum = SimpleNamespace(place_id=900, name="참소리축음기에디슨박물관", category="여행 > 관광,명소 > 박물관", region="강릉", address="강릉",
+                             latitude=37.79, longitude=128.9, opening_hours=None, verification_status="UNKNOWN")
+    asked = []
+    generation = SimpleNamespace(indoor_candidates=lambda trip, existing: asked.append(set(existing)) or [museum])
+    beach = SimpleNamespace(place_id=1, name="정동진 해변", category="여행 > 관광,명소 > 해수욕장,해변")
+    gallery = SimpleNamespace(place_id=2, name="하슬라아트월드", category="여행 > 관광,명소 > 미술관")
+    candidates, places = with_indoor_places(generation, [{"place_id": 1}, {"place_id": 2}], {1: beach, 2: gallery}, {1}, SimpleNamespace())
+
+    assert asked == [{1, 2}]
+    assert [(row["place_id"], row.get("indoor")) for row in candidates] == [(1, None), (2, True), (900, True)]
+    assert set(places) == {1, 2, 900}
+    assert PlanGenerationService.is_indoor(museum) and not PlanGenerationService.is_indoor(beach)
+
+
+def test_only_weather_previews_search_indoor_places():
+    svc, plan, _, items, _, saved, received, _ = preview_service()
+    asked = []
+    svc.generation.indoor_candidates = lambda trip, existing: asked.append(1) or []
+    svc.create(1, 10, PlanRegenerateRequest(reason="USER_FATIGUE", instruction="Less walking", feedback_codes=["rest"]))
+    assert asked == []
+    svc.create(1, 10, WEATHER)
+    assert asked == [1]

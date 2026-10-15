@@ -15,8 +15,8 @@ import 'today_travel_screen.dart';
 
 /// What the AI is asked for when plan 2/3 is applied to the saved itinerary.
 const weatherPlanInstructions = <int, String>{
-  2: 'Rain is forecast. Prefer indoor places and rest, and keep outdoor walking short.',
-  3: 'A hot day is forecast. Visit outdoor places early, and add shade or indoor rest in the afternoon.',
+  2: 'Rain is forecast. Replace outdoor stops (beaches, parks, trails) with places marked indoor, such as museums, galleries and exhibitions. Keep meals and keep outdoor walking short.',
+  3: 'A heat wave is forecast. Replace outdoor stops in the late morning and afternoon with places marked indoor, such as museums, galleries and exhibitions. Keep meals; outdoor visits only early in the morning.',
 };
 
 /// 현재 위치 날씨·일별 예보와 날씨에 맞춘 여행 계획을 보여주는 화면입니다.
@@ -191,12 +191,8 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
   Widget _weatherBody(WeatherData weather) {
     final selected = _plans[_plan - 1];
-    final rainy = const {
-      '비',
-      '비/눈',
-      '눈',
-      '소나기',
-    }.contains(weather.current.condition);
+    final rainy = isRainyWeather(weather);
+    final hot = !rainy && isHeatWave(weather);
     return ListView(
       padding: EdgeInsets.fromLTRB(ResponsiveLayout.pageHorizontal(context), ResponsiveLayout.sectionSpacing(context), ResponsiveLayout.pageHorizontal(context), 16),
       children: [
@@ -305,6 +301,8 @@ class _WeatherScreenState extends State<WeatherScreen> {
         Text(
           rainy
               ? '현재 ${weather.current.condition} 예보에는 계획 2를 추천해요.'
+              : hot
+              ? '현재 폭염 예보에는 계획 3을 추천해요.'
               : '현재 예보에 맞는 여행 계획을 선택해보세요.',
           style: const TextStyle(
             fontSize: 17,

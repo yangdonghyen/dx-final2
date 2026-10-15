@@ -218,6 +218,12 @@ MAX_NEARBY_CANDIDATES = 8
 CITYWIDE_SEARCH_QUERIES = ("관광지", "문화시설", "맛집", "카페")
 # Searched when the destination's cached places are mostly restaurants.
 ACTIVITY_SEARCH_QUERIES = ("관광지", "문화시설", "공원", "박물관")
+# Weather proposals (rain, heat): indoor places of the destination, searched
+# only for WEATHER_CHANGE previews.  Plan generation itself never uses them.
+INDOOR_SEARCH_QUERIES = ("박물관", "미술관", "전시관", "실내 체험")
+INDOOR_WORDS = ("박물관", "미술관", "전시", "기념관", "과학관", "아쿠아리움", "체험관", "문화시설", "공연장", "극장", "뮤지엄", "갤러리", "실내")
+MAX_INDOOR_CANDIDATES = 8
+INDOOR_PER_QUERY = 3
 # Searches allowed when the only problem is one dominant activity type.
 ACTIVITY_DIVERSITY_SEARCHES = 2
 # Verified non-food places wanted per trip day before the model is asked.
@@ -1101,6 +1107,48 @@ class PlanGenerationService:
         pool = self._balanced_candidate_pool(candidates, anchors, trip, targets)
         self._log_activity_shortage(trip, pool, trip_days, targets)
         return pool
+
+    @staticmethod
+    def is_indoor(place) -> bool:
+        text = f"{getattr(place, 'name', None) or ''} {getattr(place, 'category', None) or ''}".replace(" ", "")
+        return any(word.replace(" ", "") in text for word in INDOOR_WORDS)
+
+    def indoor_candidates(self, trip, existing_ids):
+        """Verified indoor places of the destination for a rain/heat proposal.
+
+        Same provider, upsert and filters as the other backfills (destination,
+        usable category, not food, eligible on the trip dates); nothing is
+        invented.  Provider failures just mean fewer additions."""
+        if self.place_provider is None or not hasattr(self.place_provider, "search"):
+            return []
+        search_service = PlaceSearchService(self.session, self.place_provider, commit=False)
+        found, excluded_ids = [], set(existing_ids)
+        for query in INDOOR_SEARCH_QUERIES:
+            try:
+                upserted = search_service.upsert_candidates(
+                    self.place_provider.search(query, trip.destination), trip.destination
+                )
+            except AppError:
+                continue
+            per_query = 0
+            for item in upserted:
+                if per_query >= INDOOR_PER_QUERY:
+                    break  # a mix of museums, galleries and exhibitions, not eight museums
+                place = self.places.get(item.place_id)
+                if (place is not None and place.place_id not in excluded_ids
+                        and self._matches_destination(place, trip.destination)
+                        and _is_usable_plan_candidate(place)
+                        and not _is_food_or_cafe(place)
+                        and self.is_indoor(place)
+                        and place.latitude is not None and place.longitude is not None
+                        and self._is_temporally_eligible(place, trip)):
+                    found.append(place)
+                    excluded_ids.add(place.place_id)
+                    per_query += 1
+            if len(found) >= MAX_INDOOR_CANDIDATES:
+                break
+        logger.info("plan_indoor_candidates trip_id=%s found=%s", getattr(trip, "trip_id", None), [place.place_id for place in found[:MAX_INDOOR_CANDIDATES]])
+        return found[:MAX_INDOOR_CANDIDATES]
 
     def _activity_backfill(self, trip, candidates, needed, areas_needed=1):
         """Verified non-food places from the destination when too few are cached,

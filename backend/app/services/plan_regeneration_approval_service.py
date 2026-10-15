@@ -100,8 +100,10 @@ class PlanRegenerationApprovalService:
             current = [self._snapshot(item) for item in self.items.list(plan.plan_id)]
             if preview.current_itinerary_snapshot != {"items": current}: raise AppError("PREVIEW_STALE", "Current itinerary no longer matches preview", 409)
             _, _, _, _, _, candidates, anchor_ids, candidate_places = self.generation._input(trip)
-            # The same candidate set the preview was built and validated with.
-            _, candidate_places = with_current_places(self.generation, current, candidates, candidate_places, anchor_ids, trip)
+            # The same candidate set the preview was built and validated with,
+            # plus the proposal's own places (indoor ones found for weather).
+            proposed_rows = list((preview.proposed_itinerary or {}).get("items", []))
+            _, candidate_places = with_current_places(self.generation, current + proposed_rows, candidates, candidate_places, anchor_ids, trip)
             days = self._validate_stored_draft(self._draft(preview.proposed_itinerary), trip, candidate_places, anchor_ids)
             travel = self._proposed_travel(preview.proposed_itinerary)
             self.revisions.create(plan.plan_id, revision_no=plan.current_version, revision_type=preview.reason, instruction=None, snapshot={"current_version": plan.current_version, "items": current})

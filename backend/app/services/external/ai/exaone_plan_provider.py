@@ -214,7 +214,7 @@ class ExaonePlanGenerationProvider:
         # Region/address selected the candidate pool before this point.  They
         # duplicate long text in the model context; coordinates preserve the
         # only routing/grouping signal the model is allowed to use.
-        place_fields = ("place_id", "name", "category", "latitude", "longitude", "is_anchor", "opening_hours", "event_start_date", "event_end_date")
+        place_fields = ("place_id", "name", "category", "latitude", "longitude", "is_anchor", "opening_hours", "event_start_date", "event_end_date", "indoor")
         payload_places = []
         for place in places:
             payload_place = {key: place.get(key) for key in place_fields if place.get(key) is not None}

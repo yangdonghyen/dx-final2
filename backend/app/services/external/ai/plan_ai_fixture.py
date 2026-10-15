@@ -43,7 +43,7 @@ GENERIC_INTERVAL_TITLES = frozenset({
     "rest", "freetime", "traveltime", "travel", "transfer",
     "휴식", "휴식시간", "자유시간", "이동", "이동시간", "이동중",
 })
-ACTIVITY_WORDS = frozenset({"드라이브", "산책", "휴식", "구경", "관람", "감상", "걷기", "쉬기"})
+ACTIVITY_WORDS = frozenset({"드라이브", "산책", "휴식", "구경", "관람", "감상", "걷기", "쉬기", "실내"})
 ITEM_TYPES = frozenset({"PLACE", "MEAL", "REST", "FREE_TIME"})
 _TIME = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$")
 
@@ -80,7 +80,9 @@ def activity_suffix(title: str, name: str) -> list[str] | None:
     title, name = normalized_name(title), normalized_name(name)
     if not name or not title.startswith(f"{name} "):
         return None
-    words = title[len(name):].split()
+    # "강릉시립미술관 교동 (실내 휴식)" (heat proposal, 2026-10-15): brackets
+    # around the activity words are only punctuation.
+    words = re.sub(r"[()\[\]·,]", " ", title[len(name):]).split()
     return words if words and all(word in ACTIVITY_WORDS for word in words) else None
 
 

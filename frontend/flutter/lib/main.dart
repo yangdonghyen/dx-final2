@@ -7,12 +7,15 @@ import 'services/active_trip_service.dart';
 import 'services/auth_service.dart';
 import 'services/display_mode_service.dart';
 import 'services/invite_link_service.dart';
+import 'data/api/api_client.dart';
 import 'services/weather_background_service.dart';
 import 'services/weather_notification_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AuthSession.restore();
+  // Expired access tokens (30 min) are renewed and the request retried.
+  ApiClient.refreshAccessToken = AuthService().refreshAccessToken;
   await ActiveTripService.restore();
   await DisplayModeService.restore();
   InviteLinkService.initialize();

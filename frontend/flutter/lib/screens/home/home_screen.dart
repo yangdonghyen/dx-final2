@@ -58,6 +58,8 @@ class _HomeScreenState extends State<HomeScreen>
   String _voiceMessage = '마이크를 준비하고 있어요.';
   bool _youtubePlanOpening = false;
   bool _showRainAlert = false;
+  // 2 = rain (계획 2), 3 = heat wave (계획 3).
+  int _weatherAlertPlan = 2;
   Timer? _rainAlertTimer;
   StreamSubscription<Map<String, dynamic>>? _youtubeSubscription;
   // YouTube pause events are received only while the Home tab is the visible
@@ -99,7 +101,7 @@ class _HomeScreenState extends State<HomeScreen>
     });
     InviteLinkService.pendingToken.addListener(_openPendingInvite);
     WidgetsBinding.instance.addPostFrameCallback((_) => _openPendingInvite());
-    WeatherNotificationService.instance.rainPlanRequested.addListener(_openRequestedRainPlan);
+    WeatherNotificationService.instance.weatherPlanRequested.addListener(_openRequestedRainPlan);
     WidgetsBinding.instance.addPostFrameCallback((_) => _openRequestedRainPlan());
     NotificationService.refreshFromTrips().catchError((_) {});
     WidgetsBinding.instance.addObserver(this);
@@ -454,7 +456,7 @@ class _HomeScreenState extends State<HomeScreen>
     }
     NotificationService.readIds.removeListener(_refreshNotificationBadge);
     InviteLinkService.pendingToken.removeListener(_openPendingInvite);
-    WeatherNotificationService.instance.rainPlanRequested.removeListener(_openRequestedRainPlan);
+    WeatherNotificationService.instance.weatherPlanRequested.removeListener(_openRequestedRainPlan);
     ActiveTripService.revision.removeListener(_refreshActiveTrip);
     _voiceSession++;
     _speech.cancel();
@@ -502,15 +504,19 @@ class _HomeScreenState extends State<HomeScreen>
         longitude: position.longitude,
       );
       if (!mounted) return;
-      final rainy = const {'비', '비/눈', '눈', '소나기'}.contains(weather.current.condition);
+      final rainy = isRainyWeather(weather);
+      final hot = !rainy && isHeatWave(weather);
       setState(() {
         _homeWeather = weather;
         _homeWeatherState = _HomeWeatherState.loaded;
-        // Rain on the trip: the alert card on Home and the phone notification
-        // both lead to the rain plan (계획 2).
-        if (rainy) _showRainAlert = true;
+        // Rain or a heat wave: the alert card on Home and the phone
+        // notification both lead to the indoor plan (계획 2 / 계획 3).
+        if (rainy || hot) {
+          _showRainAlert = true;
+          _weatherAlertPlan = hot ? 3 : 2;
+        }
       });
-      if (rainy) {
+      if (rainy || hot) {
         unawaited(WeatherNotificationService.instance.notifyForWeather(weather, requestPermission: true));
       }
     } catch (_) {
@@ -854,16 +860,17 @@ class _HomeScreenState extends State<HomeScreen>
 
   /// The phone's rain notification was tapped: same screen as the in-app alert.
   void _openRequestedRainPlan() {
-    final request = WeatherNotificationService.instance.rainPlanRequested;
-    if (!mounted || !request.value) return;
-    request.value = false;
+    final request = WeatherNotificationService.instance.weatherPlanRequested;
+    if (!mounted || request.value == 0) return;
+    _weatherAlertPlan = request.value;
+    request.value = 0;
     _openRainPlan();
   }
 
   /// 비 알림을 누르면 비 오는 날에 맞춘 날씨·일정 화면을 엽니다.
   void _openRainPlan() {
     _dismissRainAlert();
-    _push(const WeatherScreen(initialPlan: 2));
+    _push(WeatherScreen(initialPlan: _weatherAlertPlan));
   }
 
   @override
@@ -919,7 +926,7 @@ class _HomeScreenState extends State<HomeScreen>
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('🌧️', style: TextStyle(fontSize: 30)),
+                          Text(_weatherAlertPlan == 3 ? '🥵' : '🌧️', style: const TextStyle(fontSize: 30)),
                           SizedBox(width: 12),
                           Expanded(
                             child: Column(
@@ -935,7 +942,7 @@ class _HomeScreenState extends State<HomeScreen>
                                 ),
                                 SizedBox(height: 4),
                                 Text(
-                                  '${_homeWeather?.current.condition ?? '비'} 예보가 있어요.',
+                                  _weatherAlertPlan == 3 ? '폭염 예보가 있어요.' : '${_homeWeather?.current.condition ?? '비'} 예보가 있어요.',
                                   style: TextStyle(
                                     fontSize: 16,
                                     fontWeight: FontWeight.w800,
@@ -943,7 +950,9 @@ class _HomeScreenState extends State<HomeScreen>
                                 ),
                                 SizedBox(height: 4),
                                 Text(
-                                  '강수확률 ${_homeWeather?.current.precipitationProbability ?? '-'}% · 실내 중심 계획 2를 확인해보세요.',
+                                  _weatherAlertPlan == 3
+                                      ? '최고 ${_homeWeather?.daily.firstOrNull?.high?.round() ?? _homeWeather?.current.temperature?.round() ?? '-'}° · 실내 중심 계획 3을 확인해보세요.'
+                                      : '강수확률 ${_homeWeather?.current.precipitationProbability ?? '-'}% · 실내 중심 계획 2를 확인해보세요.',
                                   style: TextStyle(
                                     fontSize: 13,
                                     color: Color(0xFF4B5563),

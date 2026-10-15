@@ -125,3 +125,11 @@ def test_capture_never_breaks_generation(tmp_path):
 def test_parser_and_fixture_share_the_generic_interval_words():
     for word in plan_ai_fixture.GENERIC_INTERVAL_TITLES:
         assert ExaonePlanGenerationProvider._is_explicit_non_place_title(word)
+
+
+def test_activity_words_in_brackets_keep_the_place_visit():
+    """Heat proposal 2026-10-15: "강릉시립미술관 교동 (실내 휴식)" was rejected twice."""
+    from app.services.external.ai.plan_ai_fixture import activity_suffix
+
+    assert activity_suffix("강릉시립미술관 교동 (실내 휴식)", "강릉시립미술관 교동") == ["실내", "휴식"]
+    assert activity_suffix("강릉시립미술관 교동 (다른 곳)", "강릉시립미술관 교동") is None

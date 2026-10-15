@@ -20,6 +20,28 @@ class ApiClient {
   final String baseUrl;
   final http.Client _client;
 
+  /// Set in main(): trades the stored refresh token for a new access token.
+  /// Access tokens last 30 minutes, so without this every request failed
+  /// with 401 half an hour into a session (seen while filming the demo).
+  static Future<String?> Function()? refreshAccessToken;
+  static Future<String?>? _refreshing;
+
+  /// Sends once; on 401 with a token, refreshes it (one shared refresh for
+  /// concurrent calls) and sends again with the new token.
+  Future<http.Response> _send(
+    String? accessToken,
+    Future<http.Response> Function(String? token) request,
+  ) async {
+    final response = await request(accessToken);
+    final refresh = refreshAccessToken;
+    if (response.statusCode != 401 || accessToken == null || refresh == null) {
+      return response;
+    }
+    final renewed = await (_refreshing ??= refresh().whenComplete(() => _refreshing = null));
+    if (renewed == null || renewed == accessToken) return response;
+    return request(renewed);
+  }
+
   Future<Map<String, dynamic>> post(
     String path, {
     Map<String, dynamic>? body,
@@ -27,14 +49,14 @@ class ApiClient {
     bool sendBody = true,
     Duration timeout = defaultTimeout,
   }) async {
-    final response = await _client.post(
+    final response = await _send(accessToken, (token) => _client.post(
       Uri.parse('$baseUrl$path'),
       headers: {
         'Content-Type': 'application/json; charset=utf-8',
-        if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+        if (token != null) 'Authorization': 'Bearer $token',
       },
       body: sendBody ? jsonEncode(body ?? <String, dynamic>{}) : null,
-    ).timeout(timeout);
+    ).timeout(timeout));
 
     return _decode(response);
   }
@@ -44,12 +66,12 @@ class ApiClient {
     String? accessToken,
     Duration timeout = defaultTimeout,
   }) async {
-    final response = await _client.get(
+    final response = await _send(accessToken, (token) => _client.get(
       Uri.parse('$baseUrl$path'),
       headers: {
-        if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+        if (token != null) 'Authorization': 'Bearer $token',
       },
-    ).timeout(timeout);
+    ).timeout(timeout));
 
     return _decode(response);
   }
@@ -59,12 +81,12 @@ class ApiClient {
     String? accessToken,
     Duration timeout = defaultTimeout,
   }) async {
-    final response = await _client.delete(
+    final response = await _send(accessToken, (token) => _client.delete(
       Uri.parse('$baseUrl$path'),
       headers: {
-        if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+        if (token != null) 'Authorization': 'Bearer $token',
       },
-    ).timeout(timeout);
+    ).timeout(timeout));
 
     return _decode(response);
   }
@@ -75,14 +97,14 @@ class ApiClient {
     String? accessToken,
     Duration timeout = defaultTimeout,
   }) async {
-    final response = await _client.patch(
+    final response = await _send(accessToken, (token) => _client.patch(
       Uri.parse('$baseUrl$path'),
       headers: {
         'Content-Type': 'application/json; charset=utf-8',
-        if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+        if (token != null) 'Authorization': 'Bearer $token',
       },
       body: jsonEncode(body ?? <String, dynamic>{}),
-    ).timeout(timeout);
+    ).timeout(timeout));
 
     return _decode(response);
   }
