@@ -13,7 +13,7 @@ import '../../models/trip_transport_mode.dart';
 import '../../services/trip_draft_store.dart';
 import '../../services/trip_taste_preferences.dart';
 import '../../services/trip_service.dart';
-import 'itinerary_screen.dart';
+import 'plan_draft_screen.dart';
 
 /// 여행 생성의 모든 입력 단계를 관리하는 화면입니다.
 class TripPlacesScreen extends StatefulWidget {
@@ -611,13 +611,15 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
       tripName: ActiveTripService.nameFor(destination: _tripDestination),
     );
 
+    // A new plan opens as the AI draft first; 확정하기 there leads to the
+    // full itinerary screen as before.
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
-        builder: (_) => ItineraryScreen(
+        builder: (_) => PlanDraftScreen(
+          plan: plan,
           tripDates: _dates,
           transport: _transport,
           places: planPlaceNames,
-          generatedPlan: plan,
         ),
       ),
     );

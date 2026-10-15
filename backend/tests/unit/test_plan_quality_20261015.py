@@ -87,3 +87,17 @@ def test_far_dinner_review_can_look_up_restaurants_near_the_previous_stop(monkey
     found = svc._restaurants_near(place(1, "수목원", "여행 > 수목원", 37.78, 128.90), SimpleNamespace(destination="강릉"), set())
 
     assert [p.place_id for p in found] == [10] and asked == [(3000, ["FD6"])]  # the bar is filtered out
+
+
+def test_sights_after_dinner_are_dropped_but_meals_and_anchors_stay():
+    svc = service()
+    days = [(DAY, [
+        row(1, "PLACE", 1, time(9), time(11)),
+        row(2, "MEAL", 2, time(18), time(19)),
+        row(3, "PLACE", 3, time(20), time(21)),   # 오죽헌 at 20:00
+        row(4, "PLACE", 4, time(20, 30), time(21, 30)),  # anchor
+    ])]
+    kept = svc._drop_late_visits(days, {4}, SimpleNamespace(trip_id=1))
+    assert [(item.place_id, item.sequence) for item, _, _ in kept[0][1]] == [(1, 1), (2, 2), (4, 3)]
+    early = [(DAY, [row(1, "PLACE", 1, time(9), time(11)), row(2, "MEAL", 2, time(18), time(19))])]
+    assert svc._drop_late_visits(early, set(), SimpleNamespace(trip_id=1)) is early

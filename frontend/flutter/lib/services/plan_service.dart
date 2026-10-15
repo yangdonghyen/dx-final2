@@ -20,6 +20,7 @@ class GeneratedPlanItem {
     this.category,
     this.transportModeFromPrevious,
     this.travelMinutesFromPrevious,
+    this.travelDistanceMetersFromPrevious,
     this.travelStatus,
     this.note,
   });
@@ -44,6 +45,7 @@ class GeneratedPlanItem {
   /// Travel from the previous place. Older responses have none of these.
   final String? transportModeFromPrevious;
   final int? travelMinutesFromPrevious;
+  final int? travelDistanceMetersFromPrevious;
 
   /// KNOWN, UNKNOWN or NONE. Null when the server did not send it.
   final String? travelStatus;
@@ -62,7 +64,7 @@ class GeneratedPlanItem {
     return GeneratedPlanItem(
       itemId: (json['item_id'] as num).toInt(),
       placeId: (json['place_id'] as num?)?.toInt(),
-      name: json['name']?.toString() ?? '',
+      name: _displayName(json['name']?.toString() ?? ''),
       startTime: json['start_time']?.toString(),
       endTime: json['end_time']?.toString(),
       validationStatus: json['validation_status']?.toString() ?? '',
@@ -77,6 +79,9 @@ class GeneratedPlanItem {
       travelMinutesFromPrevious: _intOrNull(
         json['travel_minutes_from_previous'],
       ),
+      travelDistanceMetersFromPrevious: _intOrNull(
+        json['travel_distance_meters_from_previous'],
+      ),
       travelStatus: json['travel_status']?.toString(),
       note: json['note']?.toString(),
     );
@@ -84,6 +89,13 @@ class GeneratedPlanItem {
 }
 
 int? _intOrNull(Object? value) => value is num ? value.toInt() : null;
+
+/// Older plans may carry the type code as a title ("FREE_TIME").
+String _displayName(String name) => switch (name.trim().toUpperCase()) {
+  'FREE_TIME' => '자유 시간',
+  'REST' => '휴식',
+  _ => name,
+};
 
 /// Korean name of a transport_mode_from_previous value.
 String planTransportLabel(String? mode) => switch (mode) {
@@ -309,6 +321,22 @@ class PlanService {
     return GeneratedPlan.fromJson(response);
   }
 
+  /// POST /plans/{planId}/redraft: a new AI draft for the same trip ("다시
+  /// 만들기" on the draft screen).  Takes as long as the first generation.
+  Future<GeneratedPlan> redraft(int planId) async {
+    final response = await _apiClient.post(
+      '/api/v1/plans/$planId/redraft',
+      accessToken: _accessToken,
+      timeout: planAiRequestTimeout,
+    );
+    return GeneratedPlan.fromJson(response);
+  }
+
+  /// POST /plans/{planId}/confirm ("확정하기").
+  Future<void> confirm(int planId) async {
+    await _apiClient.post('/api/v1/plans/$planId/confirm', accessToken: _accessToken);
+  }
+
   /// POST /plans/{planId}/edit UPDATE_ITEM: start time (duration kept), a
   /// rest's title and the traveler's note.  Saved on the server, so the
   /// change survives reopening and companions see it.
@@ -519,6 +547,8 @@ String planErrorMessage(Object error) {
     'PREVIEW_STALE': '기존 일정이 변경되어 수정안을 적용할 수 없어요. 최신 일정에서 다시 만들어 주세요.',
     'PREVIEW_NOT_FOUND': '수정안을 찾을 수 없어요. 기존 일정은 유지됩니다.',
     'EDIT_TIME_OVERLAP': '앞뒤 일정과 시간이 겹쳐요. 다른 시간을 입력해 주세요.',
+    'PLAN_NOT_DRAFT': '이미 확정한 일정이라 다시 만들 수 없어요.',
+    'PLAN_HAS_BLOCKING_ISSUES': '먼저 확인이 필요한 일정이 있어 확정할 수 없어요.',
     'PLACE_TITLE_LOCKED': '방문 장소 이름은 바꿀 수 없어요. 장소를 바꾸려면 장소 바꾸기를 이용해 주세요.',
     'WEATHER_NO_ALTERNATIVE':
         '지금 일정에서 날씨에 맞춰 바꿀 실내 장소를 찾지 못했어요. 기존 일정은 그대로 유지됩니다.',

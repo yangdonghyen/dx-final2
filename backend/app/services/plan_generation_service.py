@@ -9,7 +9,7 @@ from datetime import timedelta
 
 from app.core.exceptions import AppError
 from app.repositories.place_repository import PlaceRepository
-from app.repositories.plan_repository import PlanItemRepository, PlanRepository
+from app.repositories.plan_repository import PlanRevisionRepository, PlanItemRepository, PlanRepository
 from app.repositories.trip_repository import (
     TripCompanionRepository,
     TripInterestRepository,
@@ -299,6 +299,8 @@ GAP_FILL_MIN_MINUTES = 120
 GAP_FILL_STAY_MINUTES = (45, 90)
 GAP_FILL_MAX_METERS = 15000
 GAP_FILL_BUFFER_MINUTES = 10
+LATE_VISIT_START = time(19, 30)
+CODE_TITLES = {"FREE_TIME": "자유 시간", "REST": "휴식", "MEAL": "식사", "PLACE": "방문"}
 GAP_FILL_REASON = "빈 시간에 가까운 관광지를 넣었어요."
 FAR_MEAL_MIN_GAIN_SECONDS = 15 * 60
 FAR_MEAL_REASON = "원래 식당이 앞뒤 일정과 멀어, 실제 이동시간이 확인된 더 가까운 식당으로 바꿨습니다."
@@ -1783,6 +1785,28 @@ class PlanGenerationService:
                 logger.info("plan_far_meal_review trip_id=%s %s", trip_id, outcome)
         return draft
 
+    def _drop_late_visits(self, days, anchor_ids, trip):
+        """A sight or cafe starting at LATE_VISIT_START or later (a museum at
+        20:00 after dinner, seen in a redraft) is dropped unless it is an
+        anchor; meals stay.  Returns ``days`` itself when nothing changed."""
+        changed = False
+        result = []
+        for visit_date, rows in days:
+            kept = [
+                row for row in rows
+                if row[1] < LATE_VISIT_START or row[0].item_type == "MEAL" or row[0].place_id in anchor_ids
+                or row[0].place_id is None
+            ]
+            # A rest left after the last kept visit means nothing; drop it too.
+            while kept and kept[-1][0].place_id is None and len(kept) < len(rows):
+                kept.pop()
+            if len(kept) != len(rows):
+                changed = True
+                logger.info("plan_late_visits_dropped trip_id=%s visit_date=%s dropped=%s", getattr(trip, "trip_id", None), visit_date,
+                            [row[0].place_id for row in rows if row not in kept])
+            result.append((visit_date, [(replace(item, sequence=number), start, end) for number, (item, start, end) in enumerate(kept, start=1)]))
+        return result if changed else days
+
     def _fill_long_gaps(self, days, candidate_places, trip):
         """Insert one unused verified sight into each long daytime gap.
 
@@ -2982,9 +3006,50 @@ class PlanGenerationService:
         finally:
             GENERATIONS_IN_PROGRESS.release(trip_id)
 
-    def _generate(self, trip, trip_id, selected_place_ids):
+    def redraft(self, user_id, plan_id):
+        """"다시 만들기" on the draft screen: a new AI plan for the same trip.
+
+        Only a DRAFT plan (not confirmed) is redrawn.  The plan keeps its id;
+        its old items go into a revision (AI_REGENERATE) and the version goes
+        up, so open previews become stale.  Any failure leaves the old draft
+        untouched (same rollback boundary as generate)."""
+        plan = self.plans.get(plan_id)
+        if plan is None:
+            raise AppError("PLAN_NOT_FOUND", "Plan not found", 404)
+        trip = self._owned_active_trip(user_id, plan.trip_id)
+        if plan.status != "DRAFT":
+            raise AppError("PLAN_NOT_DRAFT", "Only a draft plan can be made again", 409)
+        if not GENERATIONS_IN_PROGRESS.acquire(trip.trip_id):
+            raise plan_generation_in_progress_error(trip.trip_id)
+        try:
+            return self._generate(trip, trip.trip_id, None, replace_plan=plan)
+        except Exception:
+            self.session.rollback()
+            raise
+        finally:
+            GENERATIONS_IN_PROGRESS.release(trip.trip_id)
+
+    def _fresh_draft_candidates(self, plan, candidates, candidate_places, anchor_ids, trip):
+        """"다시 만들기": the model is deterministic (temperature 0), so the same
+        pool in the same order gives the same course (seen 2026-10-15).  The
+        full verified pool and its ranking are kept -- a reduced pool made the
+        model invent ids, and a rotated one broke meal order -- and only the
+        previous draft's non-anchor sights move to the end, so other sights
+        come first."""
+        previous = {item.place_id for item in self.items.list(plan.plan_id) if item.place_id is not None} - set(anchor_ids)
+
+        def used_sight(row):
+            place = candidate_places.get(row["place_id"])
+            return row["place_id"] in previous and place is not None and not _is_food_or_cafe(place)
+
+        fresh = [row for row in candidates if not used_sight(row)]
+        used = [row for row in candidates if used_sight(row)]
+        logger.info("plan_redraft_candidates trip_id=%s moved_last=%s", getattr(trip, "trip_id", None), [row["place_id"] for row in used])
+        return fresh + used
+
+    def _generate(self, trip, trip_id, selected_place_ids, replace_plan=None):
         existing = self.plans.get_by_trip_id(trip_id)
-        if existing is not None:
+        if existing is not None and replace_plan is None:
             raise plan_already_exists_error(existing)
         # Keep anchors when an older client or a recovery flow omits the
         # field.  Only an explicit list (including []) is allowed to replace
@@ -3008,6 +3073,8 @@ class PlanGenerationService:
             # Use the request anchors directly.  Saving them before model and
             # schedule validation used to make them durable on later failures.
             trip_input, preferences, companions, interests, preference_context, candidates, anchor_ids, candidate_places = self._input(trip, selected_place_ids)
+            if replace_plan is not None:
+                candidates = self._fresh_draft_candidates(replace_plan, candidates, candidate_places, anchor_ids, trip)
             stage("input_candidates")
             draft = self.provider.generate_plan(trip_input, preferences, companions, interests, preference_context, candidates)
             stage("ai_generate")
@@ -3041,7 +3108,7 @@ class PlanGenerationService:
             self._validate_temporal_draft(days, candidate_places)
             legs = self._validate_route_timing(days, candidate_places, trip) or {}
             self._validate_activity_diversity(days, candidate_places, trip)
-            filled = self._fill_long_gaps(days, candidate_places, trip)
+            filled = self._fill_long_gaps(self._drop_late_visits(days, anchor_ids, trip), candidate_places, trip)
             if filled is not days:
                 try:
                     self._validate_temporal_draft(filled, candidate_places)
@@ -3077,7 +3144,24 @@ class PlanGenerationService:
             # This flush and the new plan are intentionally committed together
             # only after all external work and validation have succeeded.
             self.selected_places.replace(trip_id, anchors)
-            plan = self.plans.create(trip_id)
+            if replace_plan is None:
+                plan = self.plans.create(trip_id)
+            else:
+                plan = replace_plan
+                old_items = self.items.list(plan.plan_id)
+                PlanRevisionRepository(self.session).create(
+                    plan.plan_id, revision_no=plan.current_version, revision_type="AI_REGENERATE", instruction=None,
+                    snapshot={"current_version": plan.current_version, "items": [
+                        {"item_id": item.item_id, "place_id": item.place_id, "visit_date": item.visit_date.isoformat(),
+                         "sequence_no": item.sequence_no, "item_type": item.item_type, "title": item.title,
+                         "start_time": item.start_time.isoformat() if item.start_time else None,
+                         "end_time": item.end_time.isoformat() if item.end_time else None}
+                        for item in old_items
+                    ]},
+                )
+                for item in old_items:
+                    self.items.delete(item)
+                plan.current_version += 1
             created_days = []
             for day_number, (visit_date, draft_items) in enumerate(days, start=1):
                 created_items = []
@@ -3088,7 +3172,8 @@ class PlanGenerationService:
                         visit_date=visit_date,
                         sequence_no=draft_item.sequence,
                         item_type=draft_item.item_type,
-                        title=draft_item.title,
+                        # The model sometimes writes the type code as the title.
+                        title=CODE_TITLES.get((draft_item.title or "").strip().upper(), draft_item.title),
                         start_time=start_time,
                         end_time=end_time,
                         recommendation_reason=draft_item.recommendation_reason,

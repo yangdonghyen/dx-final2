@@ -23,6 +23,8 @@ PreviewService = Annotated[PlanRegenerationPreviewService, Depends(get_preview_s
 ApprovalService = Annotated[PlanRegenerationApprovalService, Depends(get_approval_service)]
 @router.post("/trips/{trip_id}/plans/generate", response_model=PlanGenerateResponse)
 def generate_plan(trip_id: int, request: PlanGenerateRequest, user: CurrentUser, service: Service): return service.generate(user.user_id, trip_id, request.selected_place_ids)
+@router.post("/plans/{plan_id}/redraft", response_model=PlanGenerateResponse)
+def redraft_plan(plan_id: int, user: CurrentUser, service: Service): return service.redraft(user.user_id, plan_id)
 @router.post("/plans/{plan_id}/edit", response_model=PlanEditResponse)
 def edit_plan(plan_id: int, request: PlanEditRequest, user: CurrentUser, service: EditService): return service.edit(user.user_id, plan_id, request)
 @router.get("/trips/{trip_id}/plan", response_model=PlanDetailResponse)
