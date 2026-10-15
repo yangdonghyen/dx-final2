@@ -1,5 +1,6 @@
 ﻿from app.core.exceptions import AppError
 import logging
+from datetime import date
 
 from app.repositories.companion_repository import CompanionInterestRepository, CompanionPreferenceRepository, CompanionRepository
 from app.repositories.trip_repository import TripCompanionRepository, TripInterestRepository, TripPreferenceRepository, TripRepository, TripSelectedPlaceRepository
@@ -82,7 +83,11 @@ class TripService:
             self.session.rollback(); raise
 
     def list(self, user_id):
-        return [TripListItemResponse(trip_id=trip.trip_id, title=trip.title, departure=trip.departure, destination=trip.destination, start_date=trip.start_date, end_date=trip.end_date, status=trip.status) for trip in self.trips.list_active_for_user(user_id)]
+        row = lambda trip, role: TripListItemResponse(trip_id=trip.trip_id, title=trip.title, departure=trip.departure, destination=trip.destination, start_date=trip.start_date, end_date=trip.end_date, status=trip.status, role=role)
+        owned = [row(trip, "OWNER") for trip in self.trips.list_active_for_user(user_id)]
+        joined_lookup = getattr(self.trips, "list_joined_by_member", None)
+        joined = [row(trip, "MEMBER") for trip in joined_lookup(user_id)] if joined_lookup else []
+        return sorted(owned + joined, key=lambda item: (item.start_date is None, item.start_date or date.max, item.trip_id))
 
     def detail(self, user_id, trip_id): return self._detail(self._owned(user_id, trip_id))
 

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1 import auth, companions, discovery, docent, places, plans, trips, users, weather
+from app.api.v1 import auth, companions, discovery, docent, notifications, places, plans, trips, users, weather
 from app.schemas.common import HealthResponse
 
 api_router = APIRouter()
@@ -13,7 +13,7 @@ def health() -> HealthResponse:
 
 
 for router in (auth.router, users.router, companions.router, trips.router,
-               places.router, plans.router, docent.router, weather.router):
+               places.router, plans.router, docent.router, weather.router, notifications.router):
     api_router.include_router(router)
 
 api_router.include_router(discovery.router)

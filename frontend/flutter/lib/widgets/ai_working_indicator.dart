@@ -103,7 +103,7 @@ class _AiWorkingIndicatorState extends State<AiWorkingIndicator> {
           ),
           const SizedBox(height: 6),
           const Text(
-            '1~2분 정도 걸릴 수 있으니 화면을 닫지 말고 기다려주세요.',
+            '1~3분 정도 걸릴 수 있으니 화면을 닫지 말고 기다려주세요.',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 15, color: Color(0xFF6B7280)),
           ),

@@ -9,6 +9,13 @@ class TripRepository:
     def get(self, trip_id: int): return self.session.get(Trip, trip_id)
     def list_active_for_user(self, user_id: int):
         return list(self.session.scalars(select(Trip).where(Trip.user_id == user_id, Trip.status != "ARCHIVED").order_by(Trip.start_date, Trip.trip_id)))
+    def list_joined_by_member(self, user_id: int):
+        """Trips this user joined through an invite link (not owned)."""
+        return list(self.session.scalars(
+            select(Trip).join(TripCompanion, TripCompanion.trip_id == Trip.trip_id)
+            .where(TripCompanion.member_user_id == user_id, Trip.user_id != user_id, Trip.status != "ARCHIVED")
+            .order_by(Trip.start_date, Trip.trip_id)
+        ))
     def create(self, user_id: int, **fields):
         trip = Trip(user_id=user_id, **fields)
         self.session.add(trip); self.session.flush(); return trip

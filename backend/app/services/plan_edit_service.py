@@ -7,6 +7,16 @@ from app.schemas.plan import PlanDayResponse, PlanEditResponse, PlanItemResponse
 from app.services.plan_travel_time import EMPTY_TRAVEL, travel_response_fields, travel_statuses
 from app.services.plan_validation_service import PlanValidationService
 from app.services.trip_access import require_plan_member
+from app.services.notification_service import NotificationService
+
+# What the other people on the trip read in their 알림함.
+EDIT_DETAILS = {
+    "DELETE_PLACE": "장소 1곳을 뺐어요.",
+    "REPLACE_PLACE": "장소를 바꿨어요.",
+    "ADD_REST": "휴식을 넣었어요.",
+    "REORDER": "방문 순서를 바꿨어요.",
+    "UPDATE_ITEM": "시간이나 설명을 바꿨어요.",
+}
 
 class PlanEditService:
     def __init__(self, session):
@@ -125,6 +135,7 @@ class PlanEditService:
             elif request.operation == "UPDATE_ITEM": self._update_item(plan, request)
             else: self._fail("INVALID_EDIT_OPERATION", "Unsupported edit operation", 422)
             findings = self.validation.validate(plan, trip); plan.current_version += 1
+            NotificationService(self.session).plan_edited(trip, user_id, EDIT_DETAILS.get(request.operation, ""))
             self.session.commit(); return self._response(plan, trip, findings)
         except Exception:
             self.session.rollback(); raise

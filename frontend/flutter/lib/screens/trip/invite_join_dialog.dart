@@ -55,7 +55,11 @@ class _InviteJoinDialogState extends State<_InviteJoinDialog> {
       final alreadyJoined = await _tripService.joinSharedTrip(widget.token);
       navigator.pop();
       messenger.showSnackBar(
-        SnackBar(content: Text(alreadyJoined ? '이미 참여한 여행이에요.' : '여행에 참여했어요.')),
+        SnackBar(
+          content: Text(alreadyJoined
+              ? '이미 참여한 여행이에요. 마이 > 내 여행 일정에서 볼 수 있어요.'
+              : '여행에 참여했어요. 마이 > 내 여행 일정에서 함께 수정할 수 있어요.'),
+        ),
       );
     } catch (error) {
       debugPrint('[Invite] join failed: $error');

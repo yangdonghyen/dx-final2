@@ -20,7 +20,7 @@ import app.models
 def test_repository_has_initial_schema_and_interest_seed_migrations():
     config = Config(str(PROJECT_ROOT / "alembic.ini"))
     scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == ["012_plan_item_user_note"]
+    assert scripts.get_heads() == ["013_user_notifications"]
     assert scripts.get_revision("001_initial_schema").down_revision is None
     assert scripts.get_revision("002_seed_interest_codes").down_revision == "001_initial_schema"
     assert scripts.get_revision("003_setup_preferences").down_revision == "002_seed_interest_codes"
@@ -34,6 +34,7 @@ def test_repository_has_initial_schema_and_interest_seed_migrations():
     assert scripts.get_revision("010_plan_regeneration_previews").down_revision == "009_trip_share_links"
     assert scripts.get_revision("011_trip_transport_mode_walk").down_revision == "010_plan_regeneration_previews"
     assert scripts.get_revision("012_plan_item_user_note").down_revision == "011_trip_transport_mode_walk"
+    assert scripts.get_revision("013_user_notifications").down_revision == "012_plan_item_user_note"
 
 
 def test_alembic_template_and_offline_sql_without_database(tmp_path):
@@ -78,7 +79,7 @@ def test_initial_migration_matches_every_model_and_has_no_destructive_operations
     revision.module.upgrade()
     assert set(captured.tables) == set(Base.metadata.tables) - {
         "oauth_login_states", "trip_selected_places", "youtube_saved_discoveries",
-        "trip_share_links", "plan_regeneration_previews",
+        "trip_share_links", "plan_regeneration_previews", "user_notifications",
     }
     for name, table in captured.tables.items():
         model = Base.metadata.tables[name]
@@ -126,7 +127,7 @@ def test_initial_upgrade_sql_contains_only_expected_schema_changes():
     created = re.findall(r"CREATE TABLE (\w+)", sql)
     assert set(created) == (set(Base.metadata.tables) - {
         "oauth_login_states", "trip_selected_places", "youtube_saved_discoveries",
-        "trip_share_links", "plan_regeneration_previews",
+        "trip_share_links", "plan_regeneration_previews", "user_notifications",
     }) | {"alembic_version"}
     assert len(created) == 23
     assert not re.search(r"\b(DROP|TRUNCATE|GRANT)\b|DELETE\s+FROM|CREATE\s+(DATABASE|USER)", sql, re.I)

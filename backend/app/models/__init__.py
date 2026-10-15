@@ -36,6 +36,7 @@ from app.models.plan import (
     PlanValidationIssue,
 )
 from app.models.youtube_saved_discovery import YouTubeSavedDiscovery
+from app.models.user_notification import UserNotification
 from app.models.docent import (
     DocentAnalysis,
     DocentCandidate,
@@ -68,5 +69,6 @@ __all__ = [
     'DocentAnalysis',
     'DocentCandidate',
     'YouTubeSavedDiscovery',
+    'UserNotification',
 ]
 

@@ -24,9 +24,14 @@ class TripListItem {
     this.destination,
     this.startDate,
     this.endDate,
+    this.role = 'OWNER',
   });
 
   final int tripId;
+
+  /// OWNER, or MEMBER for a trip joined through an invite link.
+  final String role;
+  bool get isShared => role == 'MEMBER';
   final String? title;
   final String? departure;
   final String? destination;
@@ -43,6 +48,7 @@ class TripListItem {
       startDate: _parseDate(json['start_date']),
       endDate: _parseDate(json['end_date']),
       status: json['status']?.toString() ?? '',
+      role: json['role']?.toString() ?? 'OWNER',
     );
   }
 

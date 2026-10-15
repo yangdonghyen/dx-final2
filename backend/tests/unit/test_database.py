@@ -10,7 +10,7 @@ from app.db.base import Base
 def test_model_import_does_not_initialize_database():
     import app.models
 
-    assert len(Base.metadata.tables) == 27
+    assert len(Base.metadata.tables) == 28  # + user_notifications (013)
     assert session.get_engine.cache_info().currsize == 0
     with pytest.raises(DatabaseNotConfiguredError):
         session.get_engine()

@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import '../data/api/api_client.dart';
+import 'auth_service.dart';
 import 'trip_service.dart';
 
 enum NotificationKind { itineraryChange, general }
@@ -112,15 +114,43 @@ class NotificationService {
       }
     }
 
+    // Shared-trip events from the server: a companion joined, the plan was
+    // edited by someone else.  Read ones stay read across devices.
+    final serverRead = <String>{};
+    try {
+      final token = AuthSession.accessToken;
+      if (token != null) {
+        final response = await ApiClient().get('/api/v1/notifications', accessToken: token);
+        final rows = response['notifications'];
+        if (rows is List) {
+          for (final row in rows.whereType<Map<String, dynamic>>()) {
+            final id = 'srv-${row['notification_id']}';
+            final kind = row['kind']?.toString();
+            nextNotices.add(AppNotification(
+              id: id,
+              kind: kind == 'PLAN_EDITED' ? NotificationKind.itineraryChange : NotificationKind.general,
+              emoji: kind == 'PLAN_EDITED' ? '📝' : '🙋',
+              title: row['title']?.toString() ?? '알림',
+              body: row['body']?.toString() ?? '',
+            ));
+            if (row['read'] == true) serverRead.add(id);
+          }
+        }
+      }
+    } catch (error) {
+      debugPrint('[Notifications] server list failed: $error');
+    }
+
     notices
       ..clear()
       ..addAll(nextNotices);
 
     final activeIds = notices.map((item) => item.id).toSet();
 
-    _readIds.value = _readIds.value
-        .where((id) => activeIds.contains(id))
-        .toSet();
+    _readIds.value = {
+      ..._readIds.value.where((id) => activeIds.contains(id)),
+      ...serverRead,
+    };
   }
 
   static String _tripName(TripListItem trip) {
@@ -153,5 +183,14 @@ class NotificationService {
 
   static void markAllRead() {
     _readIds.value = notices.map((item) => item.id).toSet();
+    final token = AuthSession.accessToken;
+    if (token != null && notices.any((item) => item.id.startsWith('srv-'))) {
+      ApiClient()
+          .post('/api/v1/notifications/read-all', accessToken: token)
+          .catchError((Object error) {
+        debugPrint('[Notifications] read-all failed: $error');
+        return <String, dynamic>{};
+      });
+    }
   }
 }

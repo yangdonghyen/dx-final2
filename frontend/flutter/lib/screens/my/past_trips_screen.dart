@@ -405,7 +405,8 @@ class _TripCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                Positioned(
+                // A shared trip belongs to its owner: only they can discard it.
+                if (!trip.isShared) Positioned(
                   top: 6,
                   right: 6,
                   child: IconButton(

@@ -105,7 +105,7 @@ class _PlanDraftScreenState extends State<PlanDraftScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('새 초안을 만들까요?'),
-        content: const Text('AI가 같은 조건으로 코스를 다시 짜요. 1~2분 정도 걸려요.'),
+        content: const Text('AI가 같은 조건으로 코스를 다시 짜요. 1~3분 정도 걸려요.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('취소')),
           FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('다시 만들기')),
@@ -167,7 +167,7 @@ class _PlanDraftScreenState extends State<PlanDraftScreen> {
                   SizedBox(height: 16),
                   Text('AI가 새 코스 초안을 짜고 있어요', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
                   SizedBox(height: 6),
-                  Text('1~2분 정도 걸릴 수 있어요.', style: TextStyle(color: Color(0xFF6B7280))),
+                  Text('1~3분 정도 걸릴 수 있어요.', style: TextStyle(color: Color(0xFF6B7280))),
                 ],
               ),
             )

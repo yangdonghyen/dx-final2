@@ -129,6 +129,8 @@ class TripListItemResponse(BaseModel):
     start_date: date | None
     end_date: date | None
     status: TripStatus
+    # OWNER for the user's own trips, MEMBER for trips joined by invite.
+    role: Literal["OWNER", "MEMBER"] = "OWNER"
 
 
 class TripListResponse(BaseModel):

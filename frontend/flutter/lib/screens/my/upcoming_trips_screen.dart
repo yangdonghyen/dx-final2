@@ -151,7 +151,10 @@ class _UpcomingTripsScreenState extends State<UpcomingTripsScreen> {
                 child: ListTile(
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
-                  subtitle: Text('${_date(trip.startDate)} ~ ${_date(trip.endDate)}'),
+                  subtitle: Text(
+                    '${_date(trip.startDate)} ~ ${_date(trip.endDate)}'
+                    '${trip.isShared ? ' · 공유받은 여행' : ''}',
+                  ),
                   trailing: _opening == trip.tripId
                       ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.chevron_right_rounded),

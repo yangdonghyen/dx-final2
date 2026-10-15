@@ -12,6 +12,7 @@ from app.core.exceptions import AppError
 from app.repositories.plan_repository import PlanItemRepository, PlanRepository
 from app.repositories.trip_repository import TripCompanionRepository, TripRepository, TripSelectedPlaceRepository, TripShareLinkRepository
 from app.repositories.user_repository import UserRepository
+from app.services.notification_service import NotificationService
 from app.schemas.trip import SharedTripCompanionResponse, SharedTripDay, SharedTripResponse, SharedTripStop, TripJoinResponse, TripShareLinkResponse
 
 INVITE_LINK_LIFETIME = timedelta(days=7)
@@ -90,6 +91,7 @@ class TripShareService:
             return TripJoinResponse(trip_id=trip.trip_id, already_joined=True)
         try:
             self.trip_companions.create(trip.trip_id, member_user_id=user.user_id, name_snapshot=(user.nickname or UNNAMED_MEMBER_LABEL)[:50], relation_snapshot="FRIEND", age_group_snapshot=getattr(user, "age_group", None))
+            NotificationService(self.session).member_joined(trip, user)
             self.session.commit()
         except Exception:
             self.session.rollback(); raise
