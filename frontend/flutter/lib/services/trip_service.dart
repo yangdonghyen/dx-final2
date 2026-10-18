@@ -105,6 +105,7 @@ class SharedTrip {
     required this.isInvite,
     required this.companions,
     required this.selectedPlaces,
+    this.planPlaces = const [],
     this.title,
     this.destination,
     this.startDate,
@@ -121,9 +122,28 @@ class SharedTrip {
   final List<String> companions;
   final List<String> selectedPlaces;
 
+  /// Places in the saved itinerary (visits and meals, in order), for a trip
+  /// made without picking places first.
+  final List<String> planPlaces;
+
   factory SharedTrip.fromJson(Map<String, dynamic> json) {
     final companions = json['companions'];
     final places = json['selected_places'];
+    final days = json['days'];
+    final planPlaces = <String>[];
+    if (days is List) {
+      for (final day in days.whereType<Map<String, dynamic>>()) {
+        final stops = day['stops'];
+        if (stops is! List) continue;
+        for (final stop in stops.whereType<Map<String, dynamic>>()) {
+          final title = stop['title']?.toString().trim() ?? '';
+          final type = stop['item_type']?.toString();
+          if (title.isNotEmpty && (type == 'PLACE' || type == 'MEAL') && !planPlaces.contains(title)) {
+            planPlaces.add(title);
+          }
+        }
+      }
+    }
 
     return SharedTrip(
       isInvite: json['link_type'] == 'INVITE',
@@ -142,6 +162,7 @@ class SharedTrip {
       selectedPlaces: places is List
           ? places.map((name) => name.toString()).toList()
           : const [],
+      planPlaces: planPlaces,
     );
   }
 }
@@ -210,6 +231,11 @@ class TripService {
   /// every trip list; its data is kept, not erased.
   Future<void> discard(int tripId) async {
     await _apiClient.delete('/api/v1/trips/$tripId', accessToken: _accessToken);
+  }
+
+  /// DELETE /api/v1/trips/{id}/membership: leave a trip shared with me.
+  Future<void> leave(int tripId) async {
+    await _apiClient.delete('/api/v1/trips/$tripId/membership', accessToken: _accessToken);
   }
 
   /// Representative photo of a region, or null when none was found.
@@ -286,13 +312,20 @@ class TripService {
   }
 
   /// Joins the trip as a companion. Returns true when already joined.
-  Future<bool> joinSharedTrip(String token) async {
+  Future<bool> joinSharedTrip(String token) async =>
+      (await joinSharedTripWithId(token)).alreadyJoined;
+
+  /// Join, and the id of the trip that was joined.
+  Future<({bool alreadyJoined, int? tripId})> joinSharedTripWithId(String token) async {
     final response = await _apiClient.post(
       '/api/v1/shared-trips/${Uri.encodeComponent(token)}/join',
       accessToken: _accessToken,
     );
-
-    return response['already_joined'] == true;
+    final tripId = response['trip_id'];
+    return (
+      alreadyJoined: response['already_joined'] == true,
+      tripId: tripId is num ? tripId.toInt() : null,
+    );
   }
 
   static String _formatDate(DateTime date) {

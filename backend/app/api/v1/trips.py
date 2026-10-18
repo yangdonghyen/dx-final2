@@ -133,6 +133,12 @@ def render_share_link_error_page(code: str) -> str:
 <div class=card><div style="font-size:48px">🔒</div><h1>{title}</h1><p class=muted>{detail}</p></div></body></html>"""
 
 
+@router.delete("/trips/{trip_id}/membership")
+def leave_shared_trip(trip_id: int, user: CurrentUser, service: ShareService):
+    """공유받은 여행에서 나가기."""
+    return service.leave(user, trip_id)
+
+
 @router.post("/shared-trips/{token}/join", response_model=TripJoinResponse)
 def join_shared_trip(token: str, user: CurrentUser, service: ShareService):
     return service.join(user, token)

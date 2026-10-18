@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../services/notification_service.dart';
+import '../../services/weather_notification_service.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -13,6 +14,13 @@ class NotificationsScreen extends StatefulWidget {
 class _NotificationsScreenState extends State<NotificationsScreen> {
   bool _loading = false;
   String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    // A companion may have joined or edited since Home last looked.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadNotifications());
+  }
 
   Future<void> _loadNotifications() async {
     setState(() {
@@ -46,6 +54,13 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   // 읽음 처리만 합니다.
   void _openNotification(AppNotification item) {
     NotificationService.markRead(item.id);
+    // 비·폭염 알림: Home opens 오늘 날씨 at the matching plan.
+    final weatherPlan = NotificationService.weatherPlanOf(item.id);
+    if (weatherPlan != 0) {
+      WeatherNotificationService.instance.weatherPlanRequested.value = weatherPlan;
+      Navigator.of(context).maybePop();
+      return;
+    }
   }
 
   @override

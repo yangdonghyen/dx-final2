@@ -153,30 +153,21 @@ class _S extends State<LoginScreen> {
       child: ListView(
         padding: EdgeInsets.fromLTRB(ResponsiveLayout.pageHorizontal(c), 48, ResponsiveLayout.pageHorizontal(c), 28),
         children: [
+          // The app's turtle logo (same images as the start screen).
           Center(
-            child: Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                color: AppColors.primary,
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x22000000),
-                    blurRadius: 20,
-                    offset: Offset(0, 8),
-                  ),
-                ],
-              ),
-              alignment: Alignment.center,
-              child: const Text('✈️', style: TextStyle(fontSize: 42)),
+            child: Image.asset(
+              'assets/images/splash_turtles.png',
+              width: 200,
+              filterQuality: FilterQuality.high,
             ),
           ),
-          const SizedBox(height: 18),
-          const Text(
-            '보고가고',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 30, fontWeight: FontWeight.w900),
+          const SizedBox(height: 4),
+          Center(
+            child: Image.asset(
+              'assets/images/splash_wordmark.png',
+              width: 240,
+              filterQuality: FilterQuality.high,
+            ),
           ),
           const SizedBox(height: 6),
           const Text(

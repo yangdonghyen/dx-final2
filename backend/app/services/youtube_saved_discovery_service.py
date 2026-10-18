@@ -29,6 +29,16 @@ class YouTubeSavedDiscoveryService:
         )
 
     def _representative_image(self, destination_name: str) -> str | None:
+        # Picking an image asks EXAONE to compare ~90 photos (about 30s), so a
+        # region that was already picked once reuses that image.
+        known = getattr(self.saved_discoveries, "known_representative_image", None)
+        if known is not None:
+            try:
+                cached = known(destination_name)
+            except Exception:
+                cached = None
+            if isinstance(cached, str) and cached:
+                return cached
         try:
             candidates = get_tour_destination_image_provider().search_candidates(
                 destination_name,

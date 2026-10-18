@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/api/api_client.dart';
+import '../../services/active_trip_loader.dart';
 import '../../services/trip_service.dart';
 
 /// 초대 링크로 앱이 열렸을 때 여행 정보를 보여주고 참여를 묻습니다.
@@ -52,11 +53,25 @@ class _InviteJoinDialogState extends State<_InviteJoinDialog> {
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
     try {
-      final alreadyJoined = await _tripService.joinSharedTrip(widget.token);
+      final joined = await _tripService.joinSharedTripWithId(widget.token);
+      // The companion edits this trip next, so Home's 전체 일정 opens it
+      // (not the companion's own trip).
+      var opened = false;
+      final tripId = joined.tripId;
+      if (tripId != null) {
+        try {
+          final trip = await findServerTrip(tripId);
+          if (trip != null) opened = await activateServerTrip(trip);
+        } catch (error) {
+          debugPrint('[Invite] could not open the joined trip: $error');
+        }
+      }
       navigator.pop();
       messenger.showSnackBar(
         SnackBar(
-          content: Text(alreadyJoined
+          content: Text(opened
+              ? '여행에 참여했어요. 홈의 전체 일정에서 함께 수정할 수 있어요.'
+              : joined.alreadyJoined
               ? '이미 참여한 여행이에요. 마이 > 내 여행 일정에서 볼 수 있어요.'
               : '여행에 참여했어요. 마이 > 내 여행 일정에서 함께 수정할 수 있어요.'),
         ),
@@ -197,13 +212,17 @@ class _InviteJoinDialogState extends State<_InviteJoinDialog> {
         trip.companions.isEmpty ? '아직 동행자가 없어요' : trip.companions.join(', '),
       ),
       const SizedBox(height: 8),
-      _infoRow(
-        '방문할 장소',
-        trip.selectedPlaces.isEmpty
-            ? '아직 선택한 장소가 없어요'
-            : trip.selectedPlaces.join(' · '),
-      ),
+      _infoRow('방문할 장소', _placesText(trip)),
     ];
+  }
+
+  /// Picked places first; a trip made without picking shows its itinerary.
+  String _placesText(SharedTrip trip) {
+    final places = trip.selectedPlaces.isNotEmpty ? trip.selectedPlaces : trip.planPlaces;
+    if (places.isEmpty) return '아직 정해진 장소가 없어요';
+    const shown = 4;
+    if (places.length <= shown) return places.join(' · ');
+    return '${places.take(shown).join(' · ')} 외 ${places.length - shown}곳';
   }
 
   Widget _infoRow(String label, String value) => Column(

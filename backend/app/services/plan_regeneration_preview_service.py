@@ -1,6 +1,7 @@
 """Create pending regeneration previews without modifying the current itinerary."""
 
-from datetime import datetime, timedelta
+from dataclasses import replace
+from datetime import date, datetime, timedelta
 import logging
 from time import monotonic
 from typing import Any
@@ -14,7 +15,8 @@ from app.repositories.plan_repository import PlanItemRepository, PlanRegeneratio
 from app.repositories.trip_repository import TripRepository
 from app.schemas.plan import PlanRegenerateRequest, PlanRegenerationPreviewResponse
 from app.services.place_temporal_validation import verified_hours
-from app.services.plan_generation_service import PlanGenerationService, _is_food_or_cafe
+from app.services.plan_generation_service import PlanGenerationService, _is_dessert_shop, _is_food_or_cafe
+from app.services.plan_quality_rules import distance_meters, is_restaurant
 from app.services.plan_travel_time import travel_columns
 
 
@@ -59,6 +61,102 @@ def with_indoor_places(generation, candidates, candidate_places, anchor_ids, tri
         candidate_places[place.place_id] = place
         candidates.append(candidate_row(place, anchor_ids, indoor=True))
     return candidates, candidate_places
+
+
+def rain_day(trip, today=None):
+    """The day a weather proposal is about: today while the trip is on,
+    otherwise its first day (what the app's 날씨별 오늘 일정 shows)."""
+    today = today or date.today()
+    start, end = getattr(trip, "start_date", None), getattr(trip, "end_date", None)
+    if start is not None and end is not None and start <= today <= end:
+        return today
+    return start
+
+
+def swap_outdoor_for_indoor(days, candidate_places, anchor_ids, target_date):
+    """Rain or heat: on ``target_date`` move each outdoor sight to the nearest
+    unused verified indoor place, keeping its time slot.  The model often
+    leaves the beach in place (plan 55); this makes the proposal do what it
+    says.  Anchors, meals and cafes stay.  Returns ``days`` itself when
+    nothing changed; the caller validates the result like any draft."""
+    used = {item.place_id for _, rows in days for item, _, _ in rows if item.place_id is not None}
+    used_places = [candidate_places[place_id] for place_id in used if place_id in candidate_places]
+    indoor = [
+        place for place_id, place in candidate_places.items()
+        if place_id not in used and place_id not in anchor_ids
+        and PlanGenerationService.is_indoor(place) and not _is_food_or_cafe(place)
+        and getattr(place, "latitude", None) is not None and getattr(place, "longitude", None) is not None
+        and not any(same_site(place, other) for other in used_places)
+    ]
+
+    def distance(a, b):
+        return (float(a.latitude) - float(b.latitude)) ** 2 + (float(a.longitude) - float(b.longitude)) ** 2
+
+    changed = False
+    result = []
+    for visit_date, rows in days:
+        if visit_date != target_date:
+            result.append((visit_date, rows))
+            continue
+        new_rows = []
+        for item, start, end in rows:
+            place = candidate_places.get(item.place_id) if item.place_id is not None else None
+            if (indoor and place is not None and item.item_type == "PLACE" and item.place_id not in anchor_ids
+                    and not PlanGenerationService.is_indoor(place) and not _is_food_or_cafe(place)
+                    and getattr(place, "latitude", None) is not None and getattr(place, "longitude", None) is not None):
+                pick = min(indoor, key=lambda candidate: distance(candidate, place))
+                indoor.remove(pick)
+                # Two halls of one museum (부산박물관 / 부산박물관 부산관) are one visit.
+                indoor = [candidate for candidate in indoor if not same_site(candidate, pick)]
+                logger.info("weather_indoor_swap visit_date=%s from_place_id=%s to_place_id=%s", visit_date, item.place_id, pick.place_id)
+                item = replace(item, place_id=pick.place_id, title=pick.name, recommendation_reason="비 예보가 있어 가까운 실내 장소로 바꿨어요.")
+                changed = True
+            new_rows.append((item, start, end))
+        result.append((visit_date, new_rows))
+    return result if changed else days
+
+
+def same_site(first, second) -> bool:
+    """One place under two Kakao rows: a name that starts with the other's
+    name, or two entries within 150 m with the same first word."""
+    a = (getattr(first, "name", "") or "").replace(" ", "")
+    b = (getattr(second, "name", "") or "").replace(" ", "")
+    if not a or not b:
+        return False
+    if a.startswith(b) or b.startswith(a):
+        return True
+    meters = distance_meters(first, second)
+    first_word = lambda value: (value or "").split(" ")[0]
+    return meters is not None and meters < 150 and first_word(getattr(first, "name", "")) == first_word(getattr(second, "name", ""))
+
+
+def replace_dessert_meals(days, candidate_places, anchor_ids):
+    """A weather proposal keeps the stored stops, including a dessert shop
+    saved as lunch by an older plan (팥빙수 at 12:30).  Each such meal becomes
+    the nearest unused real restaurant in the same time slot.  Returns
+    ``days`` itself when nothing changed."""
+    used = {item.place_id for _, rows in days for item, _, _ in rows if item.place_id is not None}
+    restaurants = [
+        place for place_id, place in candidate_places.items()
+        if place_id not in used and is_restaurant(place) and not _is_dessert_shop(place)
+        and getattr(place, "latitude", None) is not None and getattr(place, "longitude", None) is not None
+    ]
+    changed = False
+    result = []
+    for visit_date, rows in days:
+        new_rows = []
+        for item, start, end in rows:
+            place = candidate_places.get(item.place_id) if item.place_id is not None else None
+            if (restaurants and place is not None and item.item_type == "MEAL" and item.place_id not in anchor_ids
+                    and _is_dessert_shop(place) and getattr(place, "latitude", None) is not None):
+                pick = min(restaurants, key=lambda candidate: distance_meters(candidate, place) or 1e9)
+                restaurants.remove(pick)
+                logger.info("preview_dessert_meal_replaced visit_date=%s from_place_id=%s to_place_id=%s", visit_date, item.place_id, pick.place_id)
+                item = replace(item, place_id=pick.place_id, title=pick.name, recommendation_reason="식사 시간이라 가까운 식당으로 바꿨어요.")
+                changed = True
+            new_rows.append((item, start, end))
+        result.append((visit_date, new_rows))
+    return result if changed else days
 
 
 def with_current_places(generation, current, candidates, candidate_places, anchor_ids, trip):
@@ -442,13 +540,43 @@ class PlanRegenerationPreviewService:
                 # rest-heavy trip keeps its REST slots out of meal repair.
                 days = self.generation._validate_draft(self.generation._prepare_draft(draft, candidate_places, anchor_ids, trip, preferences), set(candidate_places))
                 adjuster = getattr(self.generation, "_adjust_route_timing", None)
-                # Same bounded repair as initial generation (reorder sights,
-                # trim flexible time, a verified closer restaurant, drop an
-                # optional sight); anchors are never touched and the result is
-                # revalidated below and by the feedback goal before saving.
-                days = adjuster(days, candidate_places, trip, anchor_ids, preferences, repair=True) if adjuster is not None else days
-                self._validate_no_time_overlap(days); self.generation._validate_temporal_draft(days, candidate_places)
-                legs = self.generation._validate_route_timing(days, candidate_places, trip) or {}; self.generation._validate_activity_diversity(days, candidate_places, trip)
+
+                def finish(days):
+                    # Same bounded repair as initial generation (reorder sights,
+                    # trim flexible time, a verified closer restaurant, drop an
+                    # optional sight); anchors are never touched and the result is
+                    # revalidated below and by the feedback goal before saving.
+                    days = adjuster(days, candidate_places, trip, anchor_ids, preferences, repair=True) if adjuster is not None else days
+                    self._validate_no_time_overlap(days); self.generation._validate_temporal_draft(days, candidate_places)
+                    legs = self.generation._validate_route_timing(days, candidate_places, trip) or {}; self.generation._validate_activity_diversity(days, candidate_places, trip)
+                    return days, legs
+
+                weather_days = None
+                if request.reason == "WEATHER_CHANGE":
+                    weather_days = swap_outdoor_for_indoor(days, candidate_places, anchor_ids, rain_day(trip))
+                    weather_days = replace_dessert_meals(weather_days, candidate_places, anchor_ids)
+                    # Same final tidy as a new plan: no meal right after a
+                    # meal, usual stay lengths, lunch before the cafe, no
+                    # visit or free time after dinner.
+                    for step in ("_drop_late_visits", "_tidy_meals_and_stays", "_lunch_before_cafe"):
+                        tidy = getattr(self.generation, step, None)
+                        if callable(tidy):
+                            weather_days = (
+                                tidy(weather_days, anchor_ids, trip) if step == "_drop_late_visits"
+                                else tidy(weather_days, candidate_places, anchor_ids, trip)
+                            )
+                    if weather_days is days:
+                        weather_days = None
+                if weather_days is not None:
+                    try:
+                        days, legs = finish(weather_days)
+                    except AppError as exc:
+                        # The indoor version did not validate (hours, route);
+                        # keep the model's own proposal, checked as before.
+                        logger.info("weather_indoor_swap_rejected plan_id=%s code=%s", plan.plan_id, exc.code)
+                        days, legs = finish(days)
+                else:
+                    days, legs = finish(days)
                 included_anchors = {item.place_id for _, rows in days for item, _, _ in rows if item.place_id is not None}
                 if not anchor_ids.issubset(included_anchors): raise self.generation._provider_error()
                 proposed_items = [self._proposed_item(item, visit_date, start, end, legs.get((visit_date, item.sequence))) for visit_date, rows in days for item, start, end in rows]

@@ -83,6 +83,22 @@ class TripShareService:
             for index, (visit_date, rows) in enumerate(sorted(grouped.items()), 1)
         ]
 
+    def leave(self, user, trip_id):
+        """A companion leaves a trip they joined by invite; the owner is told.
+        Joining again needs a new invite link."""
+        trip = self.trips.get(trip_id)
+        if trip is None or trip.status == "ARCHIVED": raise AppError("TRIP_NOT_FOUND", "Trip not found", 404)
+        if trip.user_id == user.user_id: raise AppError("OWNER_CANNOT_LEAVE", "The owner deletes the trip instead", 400)
+        member = self.trip_companions.get_member(trip.trip_id, user.user_id)
+        if member is None: raise AppError("NOT_A_MEMBER", "You are not part of this trip", 404)
+        try:
+            self.session.delete(member)
+            NotificationService(self.session).member_left(trip, user)
+            self.session.commit()
+        except Exception:
+            self.session.rollback(); raise
+        return {"trip_id": trip.trip_id, "left": True}
+
     def join(self, user, token):
         link, trip = self._active_link(token)
         if link.link_type != "INVITE": raise AppError("SHARE_LINK_NOT_INVITE", "This link is view only", 400)

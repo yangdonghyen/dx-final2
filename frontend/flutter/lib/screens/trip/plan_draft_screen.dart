@@ -175,6 +175,8 @@ class _PlanDraftScreenState extends State<PlanDraftScreen> {
               children: [
                 Expanded(
                   child: ListView(
+                    // Each day starts at the top.
+                    key: ValueKey('draft-day-$_day'),
                     padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
                     children: [
                       const Text('AI 코스 초안', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900)),
@@ -206,7 +208,7 @@ class _PlanDraftScreenState extends State<PlanDraftScreen> {
                             _TravelLeg(item: day.items[index]),
                           _StopCard(number: index + 1, item: day.items[index], detail: _detail(day.items[index])),
                         ],
-                      if (_plan.warnings.isNotEmpty) ...[
+                      if (showPlanWarnings && _plan.warnings.isNotEmpty) ...[
                         const SizedBox(height: 14),
                         Text('확인이 필요한 일정 ${_plan.warnings.length}건은 확정 후 일정 화면에서 볼 수 있어요.',
                             style: const TextStyle(fontSize: 13, color: Color(0xFF9A3412))),

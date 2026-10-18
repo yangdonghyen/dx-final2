@@ -12,6 +12,7 @@ TravelStatus = Literal["KNOWN", "UNKNOWN", "NONE"]
 PlanEditOperation = Literal[
     "DELETE_PLACE",
     "REPLACE_PLACE",
+    "ADD_PLACE",
     "ADD_REST",
     "REORDER",
     "UPDATE_ITEM",

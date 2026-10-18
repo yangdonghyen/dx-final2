@@ -13,10 +13,14 @@ from app.services.notification_service import NotificationService
 EDIT_DETAILS = {
     "DELETE_PLACE": "장소 1곳을 뺐어요.",
     "REPLACE_PLACE": "장소를 바꿨어요.",
+    "ADD_PLACE": "장소 1곳을 넣었어요.",
     "ADD_REST": "휴식을 넣었어요.",
     "REORDER": "방문 순서를 바꿨어요.",
     "UPDATE_ITEM": "시간이나 설명을 바꿨어요.",
 }
+
+# recommendation_reason of a place the traveler added (ADD_PLACE).
+USER_ADDED_REASON = "여행자가 직접 추가한 장소"
 
 class PlanEditService:
     def __init__(self, session):
@@ -53,20 +57,55 @@ class PlanEditService:
         self.session.flush()
         for index, row in enumerate(rows, 1): row.sequence_no = index
         self.session.flush()
+    def _make_room(self, rows):
+        """Move ``rows`` one place later.  Through a high temporary number so
+        no UPDATE ever hits uq_plan_items_order (MySQL checks each row)."""
+        if not rows: return
+        for row in rows: row.sequence_no += 1000
+        self.session.flush()
+        for row in rows: row.sequence_no -= 999
+        self.session.flush()
     def _clear_travel(self, plan_id, visit_date):
         # Stored legs are no longer the day's legs after a place or order change.
         for row in self._day_items(plan_id, visit_date):
             for field, value in EMPTY_TRAVEL.items(): setattr(row, field, value)
         self.session.flush()
+    def _clear_leg_into(self, plan_id, visit_date, sequence_no):
+        """Only the stop now at ``sequence_no`` has a new previous stop; the
+        other stored legs of the day are still the same trips."""
+        for row in self._day_items(plan_id, visit_date):
+            if row.sequence_no == sequence_no:
+                for field, value in EMPTY_TRAVEL.items(): setattr(row, field, value)
+        self.session.flush()
+    def _times_before(self, plan_id, item_id):
+        """Stop times saved just before ``item_id`` was added: the newest
+        revision snapshot that does not contain it yet."""
+        lister = getattr(self.revisions, "list_newest_first", None)
+        if lister is None: return {}
+        for revision in lister(plan_id):
+            rows = (revision.snapshot or {}).get("items", [])
+            if all(row.get("item_id") != item_id for row in rows):
+                return {row["item_id"]: (row.get("start_time"), row.get("end_time")) for row in rows if row.get("item_id") is not None}
+        return {}
     def _delete(self, plan, request):
-        item = self._item(plan.plan_id, request.item_id); visit_date = item.visit_date
-        self.items.delete(item); self._set_order(self._day_items(plan.plan_id, visit_date)); self._clear_travel(plan.plan_id, visit_date)
+        item = self._item(plan.plan_id, request.item_id); visit_date = item.visit_date; sequence_no = item.sequence_no
+        # Undo: a place the traveler added pushed later stops back; taking it
+        # out again puts those stops back at their earlier times.
+        restore = self._times_before(plan.plan_id, item.item_id) if item.recommendation_reason == USER_ADDED_REASON else {}
+        self.items.delete(item)
+        for row in self._day_items(plan.plan_id, visit_date):
+            before = restore.get(row.item_id)
+            if row.sequence_no > sequence_no and before and before[0] and before[1] and row.start_time is not None:
+                earlier_start = datetime.strptime(before[0], "%H:%M:%S").time(); earlier_end = datetime.strptime(before[1], "%H:%M:%S").time()
+                if earlier_start < row.start_time: row.start_time, row.end_time = earlier_start, earlier_end
+        self._set_order(self._day_items(plan.plan_id, visit_date)); self._clear_leg_into(plan.plan_id, visit_date, sequence_no)
     def _replace(self, plan, request):
         item = self._item(plan.plan_id, request.item_id)
         if request.new_place_id is None: self._fail("INVALID_EDIT_PAYLOAD", "new_place_id is required", 422)
         place = self.places.get(request.new_place_id)
         if place is None: self._fail("PLACE_NOT_FOUND", "Place not found", 404)
-        self.items.update(item, place_id=place.place_id, title=place.name, item_type="PLACE"); self._clear_travel(plan.plan_id, item.visit_date)
+        self.items.update(item, place_id=place.place_id, title=place.name, item_type="PLACE")
+        self._clear_leg_into(plan.plan_id, item.visit_date, item.sequence_no); self._clear_leg_into(plan.plan_id, item.visit_date, item.sequence_no + 1)
     def _visit_date(self, trip, day):
         if trip.start_date is None: self._fail("INVALID_EDIT_PAYLOAD", "Trip start_date is required", 422)
         visit_date = trip.start_date + timedelta(days=day - 1)
@@ -80,9 +119,49 @@ class PlanEditService:
         finish = datetime.combine(date.min, after.end_time) + timedelta(minutes=request.duration_minutes)
         if finish.date() != date.min: self._fail("INVALID_EDIT_PAYLOAD", "Rest duration exceeds the day", 422)
         later = sorted((item for item in self._day_items(plan.plan_id, visit_date) if item.sequence_no > after.sequence_no), key=lambda item: item.sequence_no, reverse=True)
-        for item in later: item.sequence_no += 1
-        self.session.flush()
+        self._make_room(later)
         self.items.create(plan.plan_id, place_id=None, visit_date=visit_date, sequence_no=after.sequence_no + 1, item_type="REST", title="휴식", start_time=after.end_time, end_time=finish.time(), validation_status="UNKNOWN")
+    def _add_place(self, plan, trip, request):
+        """A verified place on one day; ``note`` is saved with it.
+
+        With ``start_time`` the place goes where that time falls in the day:
+        if the stop before is still running, it starts when that stop ends
+        (no overlap error to fix by hand).  Without it, it follows
+        ``after_item_id``.  Later stops that would overlap move later by the
+        same amount; nothing may pass midnight."""
+        if request.day is None or request.new_place_id is None or (request.start_time is None and request.after_item_id is None): self._fail("INVALID_EDIT_PAYLOAD", "day, new_place_id and start_time or after_item_id are required", 422)
+        visit_date = self._visit_date(trip, request.day)
+        place = self.places.get(request.new_place_id)
+        if place is None: self._fail("PLACE_NOT_FOUND", "Place not found", 404)
+        rows = sorted(self._day_items(plan.plan_id, visit_date), key=lambda item: item.sequence_no)
+        if request.start_time is not None:
+            chosen = datetime.combine(date.min, datetime.strptime(request.start_time, "%H:%M").time())
+            before = [row for row in rows if row.start_time is not None and datetime.combine(date.min, row.start_time) <= chosen]
+            after = before[-1] if before else None
+            start = chosen
+            if after is not None and after.end_time is not None:
+                start = max(chosen, datetime.combine(date.min, after.end_time))
+        else:
+            after = self._item(plan.plan_id, request.after_item_id)
+            if after.visit_date != visit_date: self._fail("INVALID_EDIT_PAYLOAD", "after_item_id does not belong to the requested day", 422)
+            if after.end_time is None: self._fail("INVALID_EDIT_PAYLOAD", "after_item_id must have an end_time", 422)
+            start = datetime.combine(date.min, after.end_time)
+        sequence_no = after.sequence_no + 1 if after is not None else 1
+        finish = start + timedelta(minutes=request.duration_minutes or 60)
+        if finish.date() != date.min: self._fail("INVALID_EDIT_PAYLOAD", "The place would end after midnight", 422)
+        later = [item for item in rows if item.sequence_no >= sequence_no]
+        first_start = next((item.start_time for item in later if item.start_time is not None), None)
+        shift = max(timedelta(0), finish - datetime.combine(date.min, first_start)) if first_start is not None else timedelta(0)
+        if shift:
+            for item in later:
+                if item.start_time is None or item.end_time is None: continue
+                new_start = datetime.combine(date.min, item.start_time) + shift; new_end = datetime.combine(date.min, item.end_time) + shift
+                if new_end.date() != date.min: self._fail("EDIT_DAY_OVERFLOW", "Later stops would move past midnight", 422)
+                item.start_time, item.end_time = new_start.time(), new_end.time()
+        self._make_room(later)
+        note = (request.note or "").strip() or None
+        self.items.create(plan.plan_id, place_id=place.place_id, visit_date=visit_date, sequence_no=sequence_no, item_type="PLACE", title=place.name, start_time=start.time(), end_time=finish.time(), validation_status="UNKNOWN", recommendation_reason=USER_ADDED_REASON, **({"user_note": note} if note else {}))
+        self._clear_leg_into(plan.plan_id, visit_date, sequence_no); self._clear_leg_into(plan.plan_id, visit_date, sequence_no + 1)
     def _reorder(self, plan, trip, request):
         if request.day is None or request.item_ids is None: self._fail("INVALID_EDIT_PAYLOAD", "day and item_ids are required", 422)
         if len(request.item_ids) != len(set(request.item_ids)): self._fail("INVALID_EDIT_PAYLOAD", "item_ids must not contain duplicates", 422)
@@ -131,6 +210,7 @@ class PlanEditService:
             if request.operation == "DELETE_PLACE": self._delete(plan, request)
             elif request.operation == "REPLACE_PLACE": self._replace(plan, request)
             elif request.operation == "ADD_REST": self._add_rest(plan, trip, request)
+            elif request.operation == "ADD_PLACE": self._add_place(plan, trip, request)
             elif request.operation == "REORDER": self._reorder(plan, trip, request)
             elif request.operation == "UPDATE_ITEM": self._update_item(plan, request)
             else: self._fail("INVALID_EDIT_OPERATION", "Unsupported edit operation", 422)

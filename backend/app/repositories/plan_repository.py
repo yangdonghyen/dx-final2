@@ -23,6 +23,8 @@ class PlanRevisionRepository:
     def __init__(self, session: Session): self.session = session
     def create(self, plan_id, **fields):
         revision = PlanRevision(plan_id=plan_id, **fields); self.session.add(revision); self.session.flush(); return revision
+    def list_newest_first(self, plan_id):
+        return list(self.session.scalars(select(PlanRevision).where(PlanRevision.plan_id == plan_id).order_by(PlanRevision.revision_id.desc())))
 class PlanRegenerationPreviewRepository:
     def __init__(self, session: Session): self.session = session
     def create(self, **fields):

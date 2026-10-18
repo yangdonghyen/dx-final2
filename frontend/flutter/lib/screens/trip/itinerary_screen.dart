@@ -9,6 +9,7 @@ import '../../core/theme/app_theme.dart';
 import '../../services/active_trip_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/notification_service.dart';
+import '../../services/place_search_service.dart';
 import '../../services/plan_service.dart';
 import '../../services/preview_diff_summary.dart';
 import '../../services/trip_service.dart';
@@ -32,6 +33,10 @@ class ItinerarySession {
 }
 
 /// 생성된 여행 일정을 날짜별로 보여주고 순서 변경을 처리하는 화면입니다.
+/// "확인이 필요한 일정" (validation notes) on the itinerary.  Was off for the
+/// demo video; the checks still run and still block 확정 when critical.
+const bool showPlanWarnings = true;
+
 class ItineraryScreen extends StatefulWidget {
   const ItineraryScreen({
     super.key,
@@ -81,6 +86,18 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
   int? editingScheduleIndex;
   final TextEditingController _editTimeController = TextEditingController();
   final TextEditingController _editPlaceController = TextEditingController();
+  final FocusNode _editPlaceFocusNode = FocusNode();
+  // A place picked from the name suggestions (edit or add).
+  PlaceSearchResult? _pickedPlace;
+  // Bumped when a whole new plan is applied, so the list starts at the top.
+  int _listRevision = 0;
+  // The name the place field opened with; typing something else updates the
+  // description live with the best match's address.
+  String _placeNameAtOpen = '';
+  // 장소 추가: the same panel as editing, with empty fields.
+  bool _addingPlace = false;
+  int _suggestRequest = 0;
+  final PlaceSearchService _placeSearch = PlaceSearchService();
   final TextEditingController _editDescriptionController =
       TextEditingController();
   int selectedPlan = 0;
@@ -150,6 +167,7 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
     _dayScrollController.dispose();
     _editTimeController.dispose();
     _editPlaceController.dispose();
+    _editPlaceFocusNode.dispose();
     _editDescriptionController.dispose();
     super.dispose();
   }
@@ -159,6 +177,9 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
     NotificationService.addEditStarted(place: item.place);
     setState(() {
       editingScheduleIndex = index;
+      _addingPlace = false;
+      _pickedPlace = null;
+      _placeNameAtOpen = item.place;
       _editTimeController.text = item.time;
       _editPlaceController.text = item.place;
       _editDescriptionController.text = item.description;
@@ -208,14 +229,35 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
   Future<void> _saveEditOnServer(GeneratedPlan plan, _PlanStop stop, String editedTime) async {
     final place = _editPlaceController.text.trim();
     final note = _editDescriptionController.text.trim();
-    try {
-      await _planService.updateItem(
-        plan.planId,
-        stop.itemId!,
-        startTime: editedTime.isNotEmpty && editedTime != stop.time ? editedTime : null,
-        title: !stop.isPlace && place.isNotEmpty && place != stop.place ? place : null,
-        note: note != stop.description ? note : null,
+    final picked = _pickedPlace;
+    final replacing = picked != null && place != stop.place && picked.name != stop.place;
+    if (stop.isPlace && place != stop.place && !replacing) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('장소 이름을 입력한 뒤 아래 목록에서 장소를 골라 주세요.')),
       );
+      return;
+    }
+    final startTime = editedTime.isNotEmpty && editedTime != stop.time ? editedTime : null;
+    final title = !replacing && !stop.isPlace && place.isNotEmpty && place != stop.place ? place : null;
+    final changedNote = note != stop.description ? note : null;
+    if (!replacing && startTime == null && title == null && changedNote == null) {
+      // Nothing to send; the server would refuse an empty edit.
+      setState(() => editingScheduleIndex = null);
+      return;
+    }
+    try {
+      if (replacing) {
+        await _planService.replacePlace(plan.planId, stop.itemId!, picked.placeId);
+      }
+      if (startTime != null || title != null || changedNote != null) {
+        await _planService.updateItem(
+          plan.planId,
+          stop.itemId!,
+          startTime: startTime,
+          title: title,
+          note: changedNote,
+        );
+      }
       final latest = await _planService.get(plan.planId);
       if (!mounted) return;
       setState(() {
@@ -232,6 +274,279 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(planErrorMessage(error))));
     }
   }
+
+  /// 코스 수정 중에는 카드를 왼쪽에서 오른쪽으로 밀어 장소를 뺄 수 있어요(먼저 물어봐요).
+  Widget _swipeToRemove(_PlanStop stop, Widget card) {
+    if (!courseEditOpen || _plan == null || stop.itemId == null) return card;
+    return Dismissible(
+      key: ValueKey('remove-stop-${stop.itemId}'),
+      direction: DismissDirection.startToEnd,
+      background: Container(
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.only(left: 24),
+        margin: const EdgeInsets.only(bottom: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFFD9363E),
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.delete_outline_rounded, color: Colors.white),
+            SizedBox(width: 6),
+            Text('삭제', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
+          ],
+        ),
+      ),
+      // The card stays until the server confirms; the reload redraws the day.
+      confirmDismiss: (_) async {
+        await _removeStop(stop);
+        return false;
+      },
+      child: card,
+    );
+  }
+
+  /// Reloads the plan from the server after a course edit.
+  Future<void> _reloadAfterEdit(GeneratedPlan plan, String message) async {
+    final latest = await _planService.get(plan.planId);
+    if (!mounted) return;
+    setState(() {
+      _loadedPlan = latest;
+      _applyPlan(latest);
+      editingScheduleIndex = null;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// 코스 수정: 한 곳을 일정에서 뺍니다(서버 저장, 동행자에게 알림).
+  Future<void> _removeStop(_PlanStop stop) async {
+    final plan = _plan;
+    final itemId = stop.itemId;
+    if (plan == null || itemId == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('계획을 삭제하시겠습니까?'),
+        content: Text('${stop.place}을(를) 일정에서 삭제해요.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('거절')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('확인')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await _planService.deletePlace(plan.planId, itemId);
+      NotificationService.addEditCompleted(place: stop.place);
+      await _reloadAfterEdit(plan, '${stop.place}을(를) 뺐어요. 동행자에게도 보여요.');
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(planErrorMessage(error))));
+    }
+  }
+
+  /// The trip's region ("부산 여행" → "부산"), used to rank suggestions.
+  String get _tripRegion => (ActiveTripService.name ?? '').replaceAll('여행', '').trim();
+
+  /// Places whose name looks like [query]; the trip's region comes first.
+  Future<List<PlaceSearchResult>> _suggestPlaces(String query) async {
+    final text = query.trim();
+    final request = ++_suggestRequest;
+    if (text.isEmpty) return const [];
+    // Wait for the typing to pause so each keystroke is not a search.
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    if (request != _suggestRequest) return const [];
+    final region = _tripRegion;
+    final found = <PlaceSearchResult>[];
+    try {
+      if (region.isNotEmpty) found.addAll(await _placeSearch.search(text, region: region));
+      if (found.length < 5) {
+        final seen = found.map((place) => place.placeId).toSet();
+        found.addAll((await _placeSearch.search(text)).where((place) => seen.add(place.placeId)));
+      }
+    } catch (error) {
+      debugPrint('[CourseEdit] place suggestions failed: $error');
+    }
+    if (request != _suggestRequest) return const [];
+    bool local(PlaceSearchResult place) =>
+        region.isNotEmpty && '${place.region ?? ''} ${place.address ?? ''}'.contains(region);
+    found.sort((a, b) => (local(a) ? 0 : 1).compareTo(local(b) ? 0 : 1));
+    // Live: while the name is being changed, the best match becomes the
+    // pick and its address goes into 설명 (another pick from the list wins).
+    if (mounted && found.isNotEmpty && text != _placeNameAtOpen && _editPlaceController.text.trim() == text) {
+      final best = found.first;
+      setState(() {
+        _pickedPlace = best;
+        _editDescriptionController.text = best.address ?? best.region ?? '';
+      });
+    }
+    return found.take(8).toList();
+  }
+
+  /// 장소 이름 칸: 쓰는 동안 비슷한 장소를 보여주고, 고르면 설명에 주소를 넣어요.
+  Widget _placeNameField() => RawAutocomplete<PlaceSearchResult>(
+    textEditingController: _editPlaceController,
+    focusNode: _editPlaceFocusNode,
+    optionsBuilder: (value) => _suggestPlaces(value.text),
+    displayStringForOption: (place) => place.name,
+    onSelected: (place) => setState(() {
+      _pickedPlace = place;
+      _editDescriptionController.text = place.address ?? place.region ?? '';
+    }),
+    fieldViewBuilder: (context, controller, focusNode, onSubmit) => TextField(
+      controller: controller,
+      focusNode: focusNode,
+      decoration: InputDecoration(
+        labelText: '장소',
+        isDense: true,
+        helperText: _tripRegion.isEmpty
+            ? '이름을 쓰면 비슷한 장소를 보여줘요'
+            : '이름을 쓰면 $_tripRegion 장소부터 보여줘요',
+      ),
+    ),
+    optionsViewBuilder: (context, onSelected, options) => Align(
+      alignment: Alignment.topLeft,
+      child: Material(
+        elevation: 6,
+        borderRadius: BorderRadius.circular(12),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 280, maxWidth: 340),
+          child: ListView.separated(
+            padding: EdgeInsets.zero,
+            shrinkWrap: true,
+            itemCount: options.length,
+            separatorBuilder: (_, _) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final place = options.elementAt(index);
+              return ListTile(
+                dense: true,
+                title: Text(place.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                subtitle: Text(place.address ?? place.region ?? ''),
+                onTap: () => onSelected(place),
+              );
+            },
+          ),
+        ),
+      ),
+    ),
+  );
+
+  void _openAddPanel() => setState(() {
+    _addingPlace = true;
+    editingScheduleIndex = null;
+    _pickedPlace = null;
+    _placeNameAtOpen = '';
+    _editTimeController.clear();
+    _editPlaceController.clear();
+    _editDescriptionController.clear();
+  });
+
+  /// 장소 추가: 고른 장소를 그날 마지막 일정 뒤에 넣습니다(시간·설명은 선택).
+  Future<void> _saveAddedPlace(List<_PlanStop> schedule) async {
+    final plan = _plan;
+    final withId = schedule.where((stop) => stop.itemId != null).toList();
+    final picked = _pickedPlace;
+    final time = _editTimeController.text.trim();
+    if (plan == null || withId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('저장된 일정에서만 장소를 넣을 수 있어요.')),
+      );
+      return;
+    }
+    if (picked == null || _editPlaceController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('장소 이름을 입력한 뒤 목록에서 장소를 골라 주세요.')),
+      );
+      return;
+    }
+    if (time.isNotEmpty && !_isValidTime(time)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('시간은 00:00부터 23:59까지 입력할 수 있어요.')),
+      );
+      return;
+    }
+    final note = _editDescriptionController.text.trim();
+    try {
+      await _planService.addPlace(
+        plan.planId,
+        day: selectedDay + 1,
+        afterItemId: withId.last.itemId!,
+        placeId: picked.placeId,
+        // A time inside another stop is fitted in by the server: it starts
+        // when that stop ends and later stops move back.
+        startTime: time.isEmpty ? null : time,
+        note: note.isEmpty ? null : note,
+      );
+      NotificationService.addEditCompleted(place: picked.name);
+      _addingPlace = false;
+      await _reloadAfterEdit(
+        plan,
+        time.isEmpty
+            ? '${picked.name}을(를) 넣었어요. 동행자에게도 보여요.'
+            : '${picked.name}을(를) 넣었어요. 겹치는 시간은 앞뒤 일정에 맞춰 자동으로 조정했어요.',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(planErrorMessage(error))));
+    }
+  }
+
+  Widget _inlineAddPanel(List<_PlanStop> schedule) => Container(
+    margin: const EdgeInsets.only(bottom: 10),
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: const Color(0xFFEFF6FF),
+      border: Border.all(color: const Color(0xFF2563EB)),
+      borderRadius: BorderRadius.circular(16),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          '장소 추가',
+          style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF1D4ED8)),
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          controller: _editTimeController,
+          keyboardType: TextInputType.number,
+          inputFormatters: const [_TimeInputFormatter()],
+          decoration: const InputDecoration(
+            labelText: '시간',
+            isDense: true,
+            helperText: '원하는 시간을 쓰면 겹쳐도 앞뒤 일정에 맞춰 넣어요 · 비워두면 마지막 일정 뒤',
+          ),
+        ),
+        const SizedBox(height: 8),
+        _placeNameField(),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _editDescriptionController,
+          decoration: const InputDecoration(labelText: '설명', isDense: true),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: () => setState(() => _addingPlace = false),
+                child: const Text('취소'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: FilledButton(
+                onPressed: () => _saveAddedPlace(schedule),
+                style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2563EB)),
+                child: const Text('추가'),
+              ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
 
   Widget _inlineEditPanel(List<_PlanStop> schedule, int index) => Container(
     margin: const EdgeInsets.only(bottom: 10),
@@ -259,18 +574,7 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
           decoration: const InputDecoration(labelText: '시간', isDense: true),
         ),
         const SizedBox(height: 8),
-        TextField(
-          controller: _editPlaceController,
-          // A verified place is changed with 장소 바꾸기, not by retyping it.
-          enabled: !schedule[index].isPlace || schedule[index].itemId == null,
-          decoration: InputDecoration(
-            labelText: '장소',
-            isDense: true,
-            helperText: schedule[index].isPlace && schedule[index].itemId != null
-                ? '방문 장소 이름은 바꿀 수 없어요'
-                : null,
-          ),
-        ),
+        _placeNameField(),
         const SizedBox(height: 8),
         TextField(
           controller: _editDescriptionController,
@@ -279,6 +583,18 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
         const SizedBox(height: 12),
         Row(
           children: [
+            if (_plan != null && schedule[index].itemId != null) ...[
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => _removeStop(schedule[index]),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFD9363E),
+                  ),
+                  child: const Text('삭제'),
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
             Expanded(
               child: OutlinedButton(
                 onPressed: () => setState(() => editingScheduleIndex = null),
@@ -952,13 +1268,20 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
   }
 
   String _proposedItemLabel(Map<String, dynamic> item) {
-    final date = item['visit_date']?.toString();
-    final start = item['start_time']?.toString();
-    final end = item['end_time']?.toString();
-    final time = [start, end].whereType<String>().where((v) => v.isNotEmpty);
+    // 2026-10-20 / 09:00:00 → 10/20 / 09:00 so the line reads like the rest of the app.
+    final rawDate = item['visit_date']?.toString() ?? '';
+    final dateParts = rawDate.split('-');
+    final date = dateParts.length == 3
+        ? '${int.tryParse(dateParts[1]) ?? dateParts[1]}/${int.tryParse(dateParts[2]) ?? dateParts[2]}'
+        : rawDate;
+    String? clock(Object? value) {
+      final text = value?.toString() ?? '';
+      return text.length >= 5 ? text.substring(0, 5) : (text.isEmpty ? null : text);
+    }
+    final time = [clock(item['start_time']), clock(item['end_time'])].whereType<String>();
     final prefix = [
-      if (date != null && date.isNotEmpty) date,
-      if (time.isNotEmpty) time.join(' - '),
+      if (date.isNotEmpty) date,
+      if (time.isNotEmpty) time.join('~'),
     ].join(' ');
     final title = item['title']?.toString() ?? '일정 항목';
     final label = prefix.isEmpty ? title : '$prefix · $title';
@@ -987,6 +1310,7 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
         _pendingPreview = null;
         _manualSchedules.clear();
         _approvingPreview = false;
+        _listRevision++; // the new plan opens at its top
       });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('수정안이 적용되었어요. 최신 일정을 표시합니다.')),
@@ -1309,8 +1633,9 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
     final template = TextTemplate(
       text: text,
       link: webLink,
+      // An invite carries one button only: 앱에서 참여하기.
       buttons: [
-        Button(title: buttonTitle, link: webLink),
+        if (inviteToken == null) Button(title: buttonTitle, link: webLink),
         if (inviteToken != null)
           Button(
             title: '앱에서 참여하기',
@@ -1395,6 +1720,17 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
     };
   }
 
+  /// 여행 만들기에서 고른 동행자 중 아직 초대 링크로 참여하지 않은 사람.
+  /// (고른 동행자는 이름표일 뿐이고, 계정은 초대로 참여해야 연결돼요.)
+  List<String> get _pendingCompanionNames {
+    final joined = _companions.map((companion) => companion.name.trim()).toSet();
+    return ActiveTripService.companions
+        .map((companion) => companion.name.trim())
+        .where((name) => name.isNotEmpty && !joined.contains(name))
+        .toSet()
+        .toList();
+  }
+
   /// 서버에 저장된 동행자를 보여줍니다.
   Widget _companionsPreview() => Container(
     width: double.infinity,
@@ -1415,7 +1751,9 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
                 _companionState != _CompanionLoadState.loaded
                     ? '현재 동행자'
                     : _companions.isEmpty
-                    ? '등록된 동행자가 없어요'
+                    ? (_pendingCompanionNames.isEmpty
+                        ? '등록된 동행자가 없어요'
+                        : '아직 참여한 동행자가 없어요')
                     : '현재 동행자 ${_companions.length}명',
                 style: const TextStyle(fontWeight: FontWeight.w900),
               ),
@@ -1436,10 +1774,17 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
             '동행자 정보를 확인할 수 없어요',
             style: TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
           ),
-          _CompanionLoadState.loaded when _companions.isEmpty => const Text(
-            '아직 동행자가 없어요. 친구를 초대해보세요.',
-            style: TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
-          ),
+          _CompanionLoadState.loaded when _companions.isEmpty =>
+            _pendingCompanionNames.isEmpty
+                ? const Text(
+                    '아직 동행자가 없어요. 친구를 초대해보세요.',
+                    style: TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
+                  )
+                : Text(
+                    '${_pendingCompanionNames.join(', ')}님은 아직 초대 전이에요. '
+                    '아래 친구 초대하기로 링크를 보내면 함께 일정을 볼 수 있어요.',
+                    style: const TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
+                  ),
           _CompanionLoadState.loaded => Wrap(
             spacing: 10,
             runSpacing: 10,
@@ -1705,9 +2050,13 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
                     ),
                   ),
                   icon: const Icon(Icons.chat_bubble_rounded, size: 20),
-                  label: const Text(
-                    '카카오톡',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                  label: const FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      '카카오톡',
+                      maxLines: 1,
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                    ),
                   ),
                 ),
               ),
@@ -1727,9 +2076,13 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
                     ),
                   ),
                   icon: const Icon(Icons.copy_rounded, size: 20),
-                  label: const Text(
-                    '링크 복사',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                  label: const FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      '링크 복사',
+                      maxLines: 1,
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                    ),
                   ),
                 ),
               ),
@@ -1741,7 +2094,7 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
   );
 
   /// 코스 수정 모드에서 장소 추가와 저장 동작을 제공하는 하단 제어 영역입니다.
-  Widget _courseEditActions() => Container(
+  Widget _courseEditActions(List<_PlanStop> schedule) => Container(
     margin: const EdgeInsets.only(top: 10),
     padding: const EdgeInsets.all(12),
     decoration: BoxDecoration(
@@ -1760,7 +2113,7 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
         ),
         const SizedBox(height: 4),
         const Text(
-          '장소 카드의 연필 아이콘을 눌러 항목을 수정해보세요.',
+          '연필로 시간·장소를 바꾸고, 카드를 오른쪽으로 밀면 장소를 삭제해요. 장소 추가로 새 장소를 넣어보세요.',
           style: TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
         ),
         const SizedBox(height: 10),
@@ -1768,9 +2121,7 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
           children: [
             Expanded(
               child: OutlinedButton(
-                onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('장소 추가 기능을 준비 중이에요.')),
-                ),
+                onPressed: _openAddPanel,
                 child: const Text('장소 추가'),
               ),
             ),
@@ -1778,7 +2129,12 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
             Expanded(
               child: FilledButton(
                 onPressed: () {
-                  setState(() => courseEditOpen = false);
+                  // Each change is saved on the server as it is made;
+                  // this only leaves edit mode.
+                  setState(() {
+                    courseEditOpen = false;
+                    editingScheduleIndex = null;
+                  });
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('수정한 코스를 저장했어요.')),
                   );
@@ -1995,25 +2351,29 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
     final listPadding = EdgeInsets.fromLTRB(
       20, 16, 20, 40 + MediaQuery.viewPaddingOf(context).bottom,
     );
+    // While the keyboard is up (typing in 코스 수정), the map and day tabs
+    // make room for the list instead of overflowing.
+    final typing = MediaQuery.viewInsetsOf(context).bottom > 0;
     return Scaffold(
       backgroundColor: AppColors.bg,
       body: SafeArea(
         child: Column(
           children: [
-            _mapHeader(
-              _showAllDays
-                  ? [for (var index = 0; index < _days.length; index++) ..._scheduleForDay(index, schedule)]
-                  : schedule,
-              _showAllDays ? ('전체', '${_days.length}일 일정') : day,
-            ),
-            _daySelector(),
+            if (!typing)
+              _mapHeader(
+                _showAllDays
+                    ? [for (var index = 0; index < _days.length; index++) ..._scheduleForDay(index, schedule)]
+                    : schedule,
+                _showAllDays ? ('전체', '${_days.length}일 일정') : day,
+              ),
+            if (!typing) _daySelector(),
             Expanded(
               child: _showAllDays
                   ? ListView(
                       padding: listPadding,
                       children: [
                         _actionCard(),
-                        if (_plan != null && _plan!.warnings.isNotEmpty)
+                        if (showPlanWarnings && _plan != null && _plan!.warnings.isNotEmpty)
                           _planWarningsCard(_plan!.warnings),
                         if (_pendingPreview != null && _plan != null)
                           _previewCard(_plan!),
@@ -2033,10 +2393,13 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
                         _setSelectedDay(selectedDay + (velocity < 0 ? 1 : -1));
                       },
                       child: ListView(
+                // A new day, or a newly applied plan (계획 2 → 이 일정으로
+                // 변경), opens at its top, not at the last offset.
+                key: ValueKey('day-list-$selectedDay-$_listRevision'),
                 padding: listPadding,
                 children: [
                   _actionCard(),
-                  if (_plan != null && _plan!.warnings.isNotEmpty)
+                  if (showPlanWarnings && _plan != null && _plan!.warnings.isNotEmpty)
                     _planWarningsCard(_plan!.warnings),
                   if (_pendingPreview != null && _plan != null)
                     _previewCard(_plan!),
@@ -2105,20 +2468,23 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
                   ),
                   const SizedBox(height: 10),
                   for (var index = 0; index < schedule.length; index++) ...[
-                    _ScheduleItem(
-                      key: index == firstAttractionIndex
-                          ? _selectedScheduleItemKey
-                          : null,
-                      index: index + 1,
-                      data: schedule[index],
-                      editable: courseEditOpen,
-                      editingBy: editingScheduleIndex == index ? '나' : null,
-                      editingDetail: editingScheduleIndex == index
-                          ? '일정 내용'
-                          : null,
-                      onEdit: courseEditOpen
-                          ? () => _startEditingScheduleItem(schedule, index)
-                          : null,
+                    _swipeToRemove(
+                      schedule[index],
+                      _ScheduleItem(
+                        key: index == firstAttractionIndex
+                            ? _selectedScheduleItemKey
+                            : null,
+                        index: index + 1,
+                        data: schedule[index],
+                        editable: courseEditOpen,
+                        editingBy: editingScheduleIndex == index ? '나' : null,
+                        editingDetail: editingScheduleIndex == index
+                            ? '일정 내용'
+                            : null,
+                        onEdit: courseEditOpen
+                            ? () => _startEditingScheduleItem(schedule, index)
+                            : null,
+                      ),
                     ),
                     if (editingScheduleIndex == index)
                       _inlineEditPanel(schedule, index),
@@ -2129,13 +2495,17 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
                           ? const SizedBox(height: 10)
                           : _travelLine(schedule[index + 1]),
                   ],
+                  if (courseEditOpen && _addingPlace) _inlineAddPanel(schedule),
                   const SizedBox(height: 8),
                   SizedBox(
                     width: double.infinity,
                     child: OutlinedButton.icon(
                       onPressed: () => setState(() {
                         courseEditOpen = !courseEditOpen;
-                        if (!courseEditOpen) editingScheduleIndex = null;
+                        if (!courseEditOpen) {
+                          editingScheduleIndex = null;
+                          _addingPlace = false;
+                        }
                       }),
                       icon: Icon(
                         courseEditOpen
@@ -2145,7 +2515,7 @@ class _ItineraryScreenState extends State<ItineraryScreen> {
                       label: Text(courseEditOpen ? '코스 수정 중' : '코스 수정'),
                     ),
                   ),
-                  if (courseEditOpen) _courseEditActions(),
+                  if (courseEditOpen) _courseEditActions(schedule),
                   const SizedBox(height: 10),
                   FilledButton(
                     onPressed: () => Navigator.of(context).push(
@@ -3011,7 +3381,7 @@ class _ScheduleItem extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              '${editingDetail ?? '일정'} 수정 중 · 10:30 → 11:00',
+              '${editingDetail ?? '일정'} 수정 중 · ${data.time}',
               style: TextStyle(
                 fontSize: 12,
                 color: _editingDetailColor,

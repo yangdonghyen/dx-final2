@@ -42,6 +42,24 @@ class PlaceSearchService:
             "details_updated_at": datetime.now(UTC).replace(tzinfo=None),
         }
 
+    @staticmethod
+    def _changed(place, fields) -> bool:
+        """An unchanged cached row is not rewritten.  Rewriting it only to bump
+        details_updated_at took a row lock that a plan generation held through
+        its model call, so a second trip generated meanwhile timed out.  The
+        timestamp is still refreshed once a day."""
+        def same(stored, value):
+            # Stored coordinates come back as Decimal, new ones are floats.
+            if isinstance(stored, (int, float, Decimal)) and isinstance(value, (int, float, Decimal))                     and not isinstance(stored, bool) and not isinstance(value, bool):
+                return abs(float(stored) - float(value)) < 1e-7
+            return stored == value
+
+        if any(key != "details_updated_at" and not same(getattr(place, key, None), value) for key, value in fields.items()):
+            return True
+        stamped = getattr(place, "details_updated_at", None)
+        fresh = fields.get("details_updated_at")
+        return stamped is None or fresh is None or (fresh - stamped).total_seconds() >= 86400
+
     def upsert_candidates(self, candidates, region: str | None = None):
         unique = []
         seen = set()
@@ -57,7 +75,7 @@ class PlaceSearchService:
                 place = self.places.get_by_kakao_place_id(candidate.external_id)
                 if place is None:
                     place = self.places.create(**fields)
-                else:
+                elif self._changed(place, fields):
                     place = self.places.update(place, **fields)
                 results.append(
                     PlaceSearchItemResponse(

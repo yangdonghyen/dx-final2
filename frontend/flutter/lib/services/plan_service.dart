@@ -360,6 +360,51 @@ class PlanService {
     );
   }
 
+  /// POST /plans/{planId}/edit DELETE_PLACE: takes one stop out of the day.
+  Future<void> deletePlace(int planId, int itemId) async {
+    await _apiClient.post(
+      '/api/v1/plans/$planId/edit',
+      accessToken: _accessToken,
+      body: {'operation': 'DELETE_PLACE', 'item_id': itemId},
+    );
+  }
+
+  /// POST /plans/{planId}/edit ADD_PLACE: a verified place right after
+  /// [afterItemId]; the server moves later stops if they would overlap.
+  Future<void> addPlace(
+    int planId, {
+    required int day,
+    required int afterItemId,
+    required int placeId,
+    int durationMinutes = 60,
+    String? startTime,
+    String? note,
+  }) async {
+    await _apiClient.post(
+      '/api/v1/plans/$planId/edit',
+      accessToken: _accessToken,
+      body: {
+        'operation': 'ADD_PLACE',
+        'day': day,
+        'after_item_id': afterItemId,
+        'new_place_id': placeId,
+        'duration_minutes': durationMinutes,
+        'start_time': ?startTime,
+        'note': ?note,
+      },
+    );
+  }
+
+  /// POST /plans/{planId}/edit REPLACE_PLACE: the stop becomes [placeId]
+  /// (a verified place picked from the name suggestions).
+  Future<void> replacePlace(int planId, int itemId, int placeId) async {
+    await _apiClient.post(
+      '/api/v1/plans/$planId/edit',
+      accessToken: _accessToken,
+      body: {'operation': 'REPLACE_PLACE', 'item_id': itemId, 'new_place_id': placeId},
+    );
+  }
+
   Future<PlanRegenerationPreview> createRegenerationPreview(
     int planId, {
     required String reason,
@@ -600,6 +645,10 @@ String planErrorMessage(Object error) {
     'EVENT_DATE_MISMATCH' => '행사 날짜가 여행 날짜와 맞지 않아요.',
     'OUTSIDE_OPENING_HOURS' => '운영 시간 밖에 방문하는 일정이 만들어졌어요.',
     'VALIDATION_ERROR' => '요청 내용이 올바르지 않아요.',
+    'EDIT_TIME_OVERLAP' => '앞이나 뒤 일정과 시간이 겹쳐요. 다른 시간을 입력해 주세요.',
+    'EDIT_DAY_OVERFLOW' => '뒤 일정이 자정을 넘어가요. 다른 일정을 먼저 빼 주세요.',
+    'INVALID_EDIT_PAYLOAD' => '바뀐 내용이 없거나 입력이 올바르지 않아요.',
+    'PLACE_TITLE_LOCKED' => '방문 장소 이름은 바꿀 수 없어요.',
     'UNAUTHORIZED' => '로그인이 필요해요. 다시 로그인한 뒤 시도해주세요.',
     _ => '일정을 만들지 못했어요.',
   };

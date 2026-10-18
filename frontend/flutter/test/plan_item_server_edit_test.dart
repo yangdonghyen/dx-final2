@@ -51,7 +51,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final placeField = tester.widget<TextField>(find.widgetWithText(TextField, '장소'));
-    expect(placeField.enabled, isFalse); // a verified place is not retyped
+    expect(placeField.enabled, isNot(isFalse)); // typing shows place suggestions to pick from
     await tester.enterText(find.widgetWithText(TextField, '시간'), '0930');
     await tester.enterText(find.widgetWithText(TextField, '설명'), '일출 보기');
     await tester.tap(find.widgetWithText(FilledButton, '저장'));

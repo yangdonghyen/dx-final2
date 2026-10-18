@@ -16,6 +16,10 @@ import '../../services/trip_service.dart';
 import 'plan_draft_screen.dart';
 
 /// 여행 생성의 모든 입력 단계를 관리하는 화면입니다.
+/// Reopen trip creation where a closed app left it.  Was off for the demo
+/// video: each run starts from the first step.
+const bool restoreTripDraft = true;
+
 class TripPlacesScreen extends StatefulWidget {
   const TripPlacesScreen({
     super.key,
@@ -72,11 +76,12 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
   bool _loadingTripTaste = true;
   bool _savingTripTaste = false;
   final Set<String> _transport = <String>{};
+  // One empty row to start: the name shows as "이름을 입력하세요" until typed.
   final List<_CompanionProfile> _registeredCompanions = [
-    const _CompanionProfile(name: '엄마'),
+    _CompanionProfile(name: ''),
   ];
   int? _selectedCompanionIndex = 0;
-  final Set<int> _selectedCompanionIndices = <int>{0};
+  final Set<int> _selectedCompanionIndices = <int>{};
   bool _generating = false;
   String? _generateError;
 
@@ -191,7 +196,10 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
   /// Confirmed tastes first, then the newer work-in-progress draft.
   Future<void> _restoreInputs() async {
     await _loadTripTaste();
-    final draft = await TripDraftStore.load();
+    // Filming: every trip starts at step 1, so a draft left by a closed
+    // app is dropped instead of restored.
+    final draft = restoreTripDraft ? await TripDraftStore.load() : null;
+    if (!restoreTripDraft) unawaited(TripDraftStore.clear());
     if (!mounted) return;
     if (draft != null && _sameStart(draft)) {
       super.setState(() => _applyDraft(draft));
@@ -330,6 +338,7 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
   List<_CompanionProfile> get _selectedCompanions => _selectedCompanionIndices
       .where((index) => index < _registeredCompanions.length)
       .map((index) => _registeredCompanions[index])
+      .where((companion) => companion.name.trim().isNotEmpty)
       .toList();
 
   void _toggleCompanionSelection(int index, bool selected) {
@@ -345,11 +354,44 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
 
   void _addCompanion() {
     setState(() {
-      _registeredCompanions.add(
-        _CompanionProfile(name: '동행자 ${_registeredCompanions.length + 1}'),
-      );
+      // Not const: each row needs its own identity (swipe key).
+      _registeredCompanions.add(_CompanionProfile(name: ''));
       _selectedCompanionIndex = _registeredCompanions.length - 1;
-      _selectedCompanionIndices.add(_selectedCompanionIndex!);
+    });
+    // A new companion starts with its name to type.
+    _renameCompanion(_registeredCompanions.length - 1);
+  }
+
+  /// 슬라이드로 삭제: 먼저 물어보고, 체크 상태는 남은 동행자에 맞춰 옮겨요.
+  Future<void> _removeCompanion(int index) async {
+    final name = _registeredCompanions[index].name.trim();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('동행자를 삭제하시겠습니까?'),
+        content: Text(name.isEmpty ? '이 동행자를 목록에서 삭제해요.' : '$name님을 목록에서 삭제해요.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('거절')),
+          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text('확인')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() {
+      _registeredCompanions.removeAt(index);
+      final kept = {
+        for (final selected in _selectedCompanionIndices)
+          if (selected != index) selected > index ? selected - 1 : selected,
+      };
+      _selectedCompanionIndices
+        ..clear()
+        ..addAll(kept);
+      final current = _selectedCompanionIndex;
+      _selectedCompanionIndex = current == null || current == index
+          ? null
+          : current > index
+          ? current - 1
+          : current;
     });
   }
 
@@ -364,7 +406,7 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(hintText: '이름을 입력해주세요'),
+          decoration: const InputDecoration(hintText: '이름을 입력하세요'),
           onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
         ),
         actions: [
@@ -386,6 +428,8 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
         name: trimmedName,
       );
       _selectedCompanionIndex = index;
+      // Naming someone means they come along; the checkbox can undo it.
+      _selectedCompanionIndices.add(index);
     });
   }
 
@@ -713,6 +757,7 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
         return const Center(child: CircularProgressIndicator());
       }
       return ListView(
+        key: const ValueKey('trip-step-2'),
         padding: EdgeInsets.fromLTRB(
           ResponsiveLayout.pageHorizontal(context),
           12,
@@ -723,7 +768,9 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
       );
     }
 
+    // Each step opens at its top, not where the previous step was scrolled.
     return ListView(
+      key: ValueKey('trip-step-$_step'),
       padding: _step == 1
           ? const EdgeInsets.fromLTRB(20, 12, 20, 12)
           : const EdgeInsets.fromLTRB(20, 20, 20, 28),
@@ -1252,7 +1299,7 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
           _registeredCompanions.length,
           (index) => Padding(
             padding: const EdgeInsets.only(bottom: 10),
-            child: _companionSelectorCard(index, _registeredCompanions[index]),
+            child: _companionSwipe(index, _companionSelectorCard(index, _registeredCompanions[index])),
           ),
         ),
         SizedBox(
@@ -1278,14 +1325,49 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
     );
   }
 
+  /// 슬라이드: 왼쪽→오른쪽으로 밀면 삭제(먼저 물어봐요). 이름 수정은 연필 버튼으로.
+  Widget _companionSwipe(int index, Widget card) => Dismissible(
+    key: ObjectKey(_registeredCompanions[index]),
+    direction: DismissDirection.startToEnd,
+    background: _swipeBackground(
+      Alignment.centerLeft,
+      const Color(0xFFD9363E),
+      Icons.delete_outline_rounded,
+      '삭제',
+    ),
+    confirmDismiss: (_) async {
+      await _removeCompanion(index);
+      return false; // the list redraws itself
+    },
+    child: card,
+  );
+
+  Widget _swipeBackground(Alignment alignment, Color color, IconData icon, String label) => Container(
+    alignment: alignment,
+    padding: const EdgeInsets.symmetric(horizontal: 24),
+    decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(20)),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, color: Colors.white),
+        const SizedBox(width: 6),
+        Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
+      ],
+    ),
+  );
+
   Widget _companionSelectorCard(int index, _CompanionProfile companion) {
+    final unnamed = companion.name.trim().isEmpty;
     final editing = index == _selectedCompanionIndex;
     final selected = _selectedCompanionIndices.contains(index);
     return Material(
       color: editing ? AppColors.soft : Colors.white,
       borderRadius: BorderRadius.circular(20),
       child: InkWell(
-        onTap: () => setState(() => _selectedCompanionIndex = index),
+        // An unnamed row opens the name box on tap.
+        onTap: unnamed
+            ? () => _renameCompanion(index)
+            : () => setState(() => _selectedCompanionIndex = index),
         borderRadius: BorderRadius.circular(20),
         child: Container(
           padding: const EdgeInsets.all(16),
@@ -1301,14 +1383,16 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
               CircleAvatar(
                 radius: 25,
                 backgroundColor: const Color(0xFFDEE7FF),
-                child: Text(
-                  companion.name.characters.first,
-                  style: const TextStyle(
-                    color: AppColors.primary,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
+                child: unnamed
+                    ? const Icon(Icons.person_outline, color: AppColors.primary)
+                    : Text(
+                        companion.name.characters.first,
+                        style: const TextStyle(
+                          color: AppColors.primary,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -1316,10 +1400,11 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      companion.name,
-                      style: const TextStyle(
+                      unnamed ? '이름을 입력하세요' : companion.name,
+                      style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.w900,
+                        color: unnamed ? const Color(0xFF9CA3AF) : null,
                       ),
                     ),
                   ],
@@ -1327,14 +1412,15 @@ class _TripPlacesScreenState extends State<TripPlacesScreen>
               ),
               IconButton(
                 onPressed: () => _renameCompanion(index),
-                tooltip: '${companion.name} 이름 수정',
+                tooltip: unnamed ? '동행자 이름 입력' : '${companion.name} 이름 수정',
                 icon: const Icon(Icons.edit_outlined),
               ),
               Checkbox(
                 value: selected,
-                onChanged: (value) =>
-                    _toggleCompanionSelection(index, value ?? false),
-                semanticLabel: '${companion.name} 동행자 선택',
+                onChanged: unnamed
+                    ? (_) => _renameCompanion(index)
+                    : (value) => _toggleCompanionSelection(index, value ?? false),
+                semanticLabel: unnamed ? '동행자 선택' : '${companion.name} 동행자 선택',
               ),
             ],
           ),

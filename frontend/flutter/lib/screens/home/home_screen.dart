@@ -7,11 +7,13 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import '../../core/layout/app_responsive.dart';
 import '../../core/theme/app_theme.dart';
+import '../../services/active_trip_loader.dart';
 import '../../services/active_trip_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/display_mode_service.dart';
 import '../../services/invite_link_service.dart';
 import '../../services/notification_service.dart';
+import '../../services/trip_service.dart';
 import '../../services/weather_notification_service.dart';
 import '../../services/weather_service.dart';
 import '../../app.dart' show appRouteObserver;
@@ -61,6 +63,8 @@ class _HomeScreenState extends State<HomeScreen>
   // 2 = rain (계획 2), 3 = heat wave (계획 3).
   int _weatherAlertPlan = 2;
   Timer? _rainAlertTimer;
+  // Picks up companion joins/edits made on another phone while Home is open.
+  Timer? _notificationPoll;
   StreamSubscription<Map<String, dynamic>>? _youtubeSubscription;
   // YouTube pause events are received only while the Home tab is the visible
   // page and the app is in the foreground (see _syncYoutubeBridge).
@@ -103,7 +107,14 @@ class _HomeScreenState extends State<HomeScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) => _openPendingInvite());
     WeatherNotificationService.instance.weatherPlanRequested.addListener(_openRequestedRainPlan);
     WidgetsBinding.instance.addPostFrameCallback((_) => _openRequestedRainPlan());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _restoreActiveTripIfEmpty());
+    NotificationService.companionAlert.addListener(_showCompanionAlert);
     NotificationService.refreshFromTrips().catchError((_) {});
+    _notificationPoll = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (mounted && _appForeground && AuthSession.isLoggedIn) {
+        NotificationService.refreshFromTrips().catchError((_) {});
+      }
+    });
     WidgetsBinding.instance.addObserver(this);
     _youtubeSubscription = YoutubeBridgeService.instance.events.listen((event) {
       if (!mounted) return;
@@ -156,6 +167,8 @@ class _HomeScreenState extends State<HomeScreen>
           // so the buttons show progress and lock until it answers.
           String? busy;
           String? failure;
+          // After 저장하기 the dialog stays open so 여행 계획하기 can follow.
+          var savedOnce = false;
           return StatefulBuilder(builder: (_, setDialogState) => AlertDialog(
             insetPadding: const EdgeInsets.symmetric(
               horizontal: 24,
@@ -168,10 +181,16 @@ class _HomeScreenState extends State<HomeScreen>
               children: [
                 const Icon(Icons.tv, size: 28),
                 const SizedBox(width: 10),
+                // Two fixed lines; a large system font shrinks them instead of
+                // breaking a word in the middle.
                 const Expanded(
-                  child: Text(
-                    'TV에서 여행 영상을 발견했어요',
-                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'TV에서 여행 영상을\n발견했어요',
+                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                    ),
                   ),
                 ),
                 IconButton(
@@ -185,6 +204,9 @@ class _HomeScreenState extends State<HomeScreen>
             ),
             content: SizedBox(
               width: 420,
+              // Scrolls instead of overflowing when the 저장 message or a
+              // large system font makes the content taller than the dialog.
+              child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -245,6 +267,13 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                     ],
                   ),
+                  if (savedOnce) ...[
+                    const SizedBox(height: 12),
+                    const Text(
+                      '저장했어요. 여행 계획하기를 누르면 바로 일정을 만들 수 있어요.',
+                      style: TextStyle(fontSize: 15, color: Color(0xFF16A34A), fontWeight: FontWeight.w600),
+                    ),
+                  ],
                   if (failure != null) ...[
                     const SizedBox(height: 12),
                     Text(
@@ -254,14 +283,17 @@ class _HomeScreenState extends State<HomeScreen>
                   ],
                 ],
               ),
+              ),
             ),
             actionsPadding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
             actions: [
               Row(
                 children: [
+                  // "여행 계획하기" is the longer label, so it gets more width.
                   Expanded(
+                    flex: 9,
                     child: OutlinedButton.icon(
-                      onPressed: busy != null ? null : () async {
+                      onPressed: busy != null || savedOnce ? null : () async {
                         setDialogState(() {
                           busy = 'save';
                           failure = null;
@@ -275,12 +307,10 @@ class _HomeScreenState extends State<HomeScreen>
                           );
 
                           if (!mounted || !dialogContext.mounted) return;
-
-                          Navigator.of(dialogContext).pop();
-
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('저장했어요.')),
-                          );
+                          setDialogState(() {
+                            busy = null;
+                            savedOnce = true;
+                          });
                         } catch (error) {
                           debugPrint('[YouTube Bridge] SAVE failed: $error');
                           if (!dialogContext.mounted) return;
@@ -293,21 +323,29 @@ class _HomeScreenState extends State<HomeScreen>
                       },
                       icon: busy == 'save'
                           ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.bookmark_border),
-                      label: Text(
-                        busy == 'save' ? '저장 중…' : '저장하기',
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w600,
+                          : Icon(savedOnce ? Icons.bookmark_added : Icons.bookmark_border, size: 20),
+                      // One line on every phone: a narrow screen or a large
+                      // system font shrinks the text instead of wrapping it.
+                      label: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          busy == 'save' ? '저장 중…' : savedOnce ? '저장됨' : '저장하기',
+                          maxLines: 1,
+                          softWrap: false,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   Expanded(
+                    flex: 11,
                     child: FilledButton.icon(
                       onPressed: busy != null ? null : () async {
                         if (_youtubePlanOpening) return;
@@ -358,16 +396,23 @@ class _HomeScreenState extends State<HomeScreen>
                       },
                       icon: busy == 'plan'
                           ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                          : const Icon(Icons.route),
-                      label: Text(
-                        busy == 'plan' ? '여행지 확인 중…' : '여행 계획하기',
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w600,
+                          : const Icon(Icons.route, size: 20),
+                      // One line on every phone: a narrow screen or a large
+                      // system font shrinks the text instead of wrapping it.
+                      label: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          busy == 'plan' ? '여행지 확인 중…' : '여행 계획하기',
+                          maxLines: 1,
+                          softWrap: false,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
                       style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
                       ),
                     ),
                   ),
@@ -447,6 +492,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     _rainAlertTimer?.cancel();
+    _notificationPoll?.cancel();
     _youtubeSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     if (_routeObserved) appRouteObserver.unsubscribe(this);
@@ -455,6 +501,7 @@ class _HomeScreenState extends State<HomeScreen>
       unawaited(YoutubeBridgeService.instance.stop());
     }
     NotificationService.readIds.removeListener(_refreshNotificationBadge);
+    NotificationService.companionAlert.removeListener(_showCompanionAlert);
     InviteLinkService.pendingToken.removeListener(_openPendingInvite);
     WeatherNotificationService.instance.weatherPlanRequested.removeListener(_openRequestedRainPlan);
     ActiveTripService.revision.removeListener(_refreshActiveTrip);
@@ -494,11 +541,16 @@ class _HomeScreenState extends State<HomeScreen>
         throw StateError('Location permission is unavailable.');
       }
 
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-        ),
-      );
+      // The last known position answers at once; a fresh high-accuracy fix
+      // took several seconds and held back the weather card.  Weather is
+      // per area, so a recent position is precise enough.
+      final position = await Geolocator.getLastKnownPosition() ??
+          await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.medium,
+              timeLimit: Duration(seconds: 8),
+            ),
+          );
       final weather = await _weatherService.getWeatherAt(
         latitude: position.latitude,
         longitude: position.longitude,
@@ -522,6 +574,68 @@ class _HomeScreenState extends State<HomeScreen>
     } catch (_) {
       if (!mounted) return;
       setState(() => _homeWeatherState = _HomeWeatherState.error);
+    }
+  }
+
+  /// 동행자가 참여하거나 일정을 수정하면 팝업과 휴대폰 알림으로 알려요.
+  void _showCompanionAlert() {
+    final notice = NotificationService.companionAlert.value;
+    if (notice == null || !mounted) return;
+    NotificationService.companionAlert.value = null;
+    unawaited(WeatherNotificationService.instance.showTripUpdate(notice.title, notice.body));
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Row(
+          children: [
+            Text(notice.emoji, style: const TextStyle(fontSize: 26)),
+            const SizedBox(width: 8),
+            Expanded(child: Text(notice.title)),
+          ],
+        ),
+        content: Text(notice.body, style: const TextStyle(fontSize: 17)),
+        actions: [
+          FilledButton(
+            onPressed: () {
+              NotificationService.markRead(notice.id);
+              Navigator.of(dialogContext).pop();
+            },
+            child: const Text('확인'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The current trip lives on the phone and is cleared by logout (or a new
+  /// account).  The trips are still on the server, so Home picks one again:
+  /// today's trip, else the next one, else the latest.
+  Future<void> _restoreActiveTripIfEmpty() async {
+    if (!AuthSession.isLoggedIn) return;
+    try {
+      final trips = await TripService().list();
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      // The phone's current trip must still be a live trip: deleted
+      // (archived) or already finished trips are not "다가오는 여행".
+      final current = ActiveTripService.tripId;
+      if (current != null) {
+        final match = trips.where((trip) => trip.tripId == current).firstOrNull;
+        final ended = match?.endDate != null && match!.endDate!.isBefore(today);
+        if (match != null && !ended) return;
+        await ActiveTripService.clear();
+      }
+      bool covers(TripListItem trip) =>
+          trip.startDate != null && trip.endDate != null &&
+          !trip.startDate!.isAfter(today) && !trip.endDate!.isBefore(today);
+      final upcoming = trips.where((trip) => trip.startDate != null && !trip.startDate!.isBefore(today)).toList()
+        ..sort((a, b) => a.startDate!.compareTo(b.startDate!));
+      // Only today's or a coming trip; past trips stay in 지난 여행.
+      final trip = trips.where(covers).firstOrNull ?? upcoming.firstOrNull;
+      if (trip == null || !mounted || ActiveTripService.tripId != null) return;
+      await activateServerTrip(trip);
+    } catch (error) {
+      debugPrint('[Home] current trip restore failed: $error');
     }
   }
 
@@ -1062,7 +1176,7 @@ class _HomeScreenState extends State<HomeScreen>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        '보고가고 🚀',
+                        '보고가고',
                         style: TextStyle(
                           fontSize: 15,
                           color: AppColors.primary,

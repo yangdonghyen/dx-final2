@@ -53,6 +53,39 @@ class NotificationService {
       )
       .length;
 
+  /// The newest companion news (joined / edited) that arrived since the
+  /// last check; Home shows it as a popup.
+  static final ValueNotifier<AppNotification?> companionAlert = ValueNotifier(null);
+  static Set<String>? _knownServerIds;
+
+  // Today's rain / heat alert, also shown in the bell (id: weather-2-… for
+  // rain, weather-3-… for heat; the number is the weather plan to open).
+  static AppNotification? _weatherNotice;
+
+  static void setWeatherNotice({
+    required int plan,
+    required String day,
+    required String title,
+    required String body,
+  }) {
+    final notice = AppNotification(
+      id: 'weather-$plan-$day',
+      kind: NotificationKind.general,
+      emoji: plan == 3 ? '🥵' : '🌧️',
+      title: title,
+      body: body,
+    );
+    _weatherNotice = notice;
+    notices
+      ..removeWhere((item) => item.id.startsWith('weather-'))
+      ..insert(0, notice);
+    _readIds.value = {..._readIds.value}; // redraw the bell badge
+  }
+
+  /// 2 (rain) or 3 (heat) for a weather notice id, otherwise 0.
+  static int weatherPlanOf(String id) =>
+      id.startsWith('weather-') ? int.tryParse(id.split('-')[1]) ?? 0 : 0;
+
   static Future<void> refreshFromTrips() async {
     final trips = await TripService().list();
 
@@ -123,13 +156,15 @@ class NotificationService {
         final response = await ApiClient().get('/api/v1/notifications', accessToken: token);
         final rows = response['notifications'];
         if (rows is List) {
+          // Newest companion news goes above the trip reminders.
+          var serverIndex = 0;
           for (final row in rows.whereType<Map<String, dynamic>>()) {
             final id = 'srv-${row['notification_id']}';
             final kind = row['kind']?.toString();
-            nextNotices.add(AppNotification(
+            nextNotices.insert(serverIndex++, AppNotification(
               id: id,
               kind: kind == 'PLAN_EDITED' ? NotificationKind.itineraryChange : NotificationKind.general,
-              emoji: kind == 'PLAN_EDITED' ? '📝' : '🙋',
+              emoji: kind == 'PLAN_EDITED' ? '📝' : kind == 'MEMBER_LEFT' ? '👋' : '🙋',
               title: row['title']?.toString() ?? '알림',
               body: row['body']?.toString() ?? '',
             ));
@@ -140,6 +175,18 @@ class NotificationService {
     } catch (error) {
       debugPrint('[Notifications] server list failed: $error');
     }
+
+    final weather = _weatherNotice;
+    if (weather != null) nextNotices.insert(0, weather);
+
+    // First load only learns what is there; later loads pop up what is new.
+    final serverNotices = nextNotices.where((item) => item.id.startsWith('srv-')).toList();
+    final known = _knownServerIds;
+    if (known != null) {
+      final fresh = serverNotices.where((item) => !known.contains(item.id) && !serverRead.contains(item.id));
+      if (fresh.isNotEmpty) companionAlert.value = fresh.first;
+    }
+    _knownServerIds = serverNotices.map((item) => item.id).toSet();
 
     notices
       ..clear()

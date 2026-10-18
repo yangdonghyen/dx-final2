@@ -5,6 +5,7 @@
   "description": "Sends paused YouTube playback to the TravelMate backend on the private network.",
   "permissions": [],
   "host_permissions": [
+    "https://bogogago.kro.kr/*",
     "http://192.168.219.122:8000/*",
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*"

@@ -63,6 +63,68 @@ class _UpcomingTripsScreenState extends State<UpcomingTripsScreen> {
     }
   }
 
+  /// 왼쪽→오른쪽 슬라이드: 먼저 물어보고, 확인하면 여행을 지워요(서버 보관).
+  Future<bool> _deleteTrip(TripListItem trip, String title) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('일정을 삭제하시겠습니까?'),
+        content: Text('$title을(를) 내 여행 일정에서 삭제해요.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('거절')),
+          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text('확인')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return false;
+    try {
+      await _tripService.discard(trip.tripId);
+      if (ActiveTripService.tripId == trip.tripId) await ActiveTripService.clear();
+      if (!mounted) return false;
+      setState(() => _trips = _trips.where((item) => item.tripId != trip.tripId).toList());
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$title을(를) 삭제했어요.')));
+      return false; // removed from the list above
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('삭제하지 못했어요. 잠시 후 다시 시도해주세요.')),
+        );
+      }
+      return false;
+    }
+  }
+
+  /// 공유받은 여행 나가기: 먼저 물어보고, 확인하면 동행자에서 빠져요.
+  /// 여행 주인에게는 "동행자가 나갔어요" 알림이 가요.
+  Future<bool> _leaveTrip(TripListItem trip, String title) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('여행에서 나가시겠습니까?'),
+        content: Text('$title에서 나가면 이 여행을 더 볼 수 없어요. 다시 함께하려면 새 초대 링크가 필요해요.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('거절')),
+          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text('확인')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return false;
+    try {
+      await _tripService.leave(trip.tripId);
+      if (ActiveTripService.tripId == trip.tripId) await ActiveTripService.clear();
+      if (!mounted) return false;
+      setState(() => _trips = _trips.where((item) => item.tripId != trip.tripId).toList());
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$title에서 나갔어요.')));
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('나가지 못했어요. 잠시 후 다시 시도해주세요.')),
+        );
+      }
+    }
+    return false;
+  }
+
   Future<void> _open(TripListItem trip) async {
     if (_opening != null) return;
     setState(() => _opening = trip.tripId);
@@ -145,7 +207,7 @@ class _UpcomingTripsScreenState extends State<UpcomingTripsScreen> {
               final title = (trip.title?.trim().isNotEmpty ?? false)
                   ? trip.title!.trim()
                   : '${trip.destination ?? '여행'} 여행';
-              return Material(
+              final card = Material(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(16),
                 child: ListTile(
@@ -160,6 +222,31 @@ class _UpcomingTripsScreenState extends State<UpcomingTripsScreen> {
                       : const Icon(Icons.chevron_right_rounded),
                   onTap: () => _open(trip),
                 ),
+              );
+              // Own trip: 삭제.  A shared trip belongs to its owner, so the
+              // same swipe means 나가기 (leave) instead.
+              return Dismissible(
+                key: ValueKey('trip-${trip.tripId}'),
+                direction: DismissDirection.startToEnd,
+                background: Container(
+                  alignment: Alignment.centerLeft,
+                  padding: const EdgeInsets.only(left: 24),
+                  decoration: BoxDecoration(
+                    color: trip.isShared ? const Color(0xFF6B7280) : const Color(0xFFD9363E),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(trip.isShared ? Icons.logout_rounded : Icons.delete_outline_rounded, color: Colors.white),
+                      const SizedBox(width: 6),
+                      Text(trip.isShared ? '나가기' : '삭제',
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
+                    ],
+                  ),
+                ),
+                confirmDismiss: (_) => trip.isShared ? _leaveTrip(trip, title) : _deleteTrip(trip, title),
+                child: card,
               );
             },
           ),

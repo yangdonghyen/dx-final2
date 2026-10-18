@@ -56,7 +56,8 @@ def test_short_gaps_and_missing_routes_leave_the_day_unchanged():
     dinner = place(2, "식당", "음식점 > 한식", 37.78, 128.95)
     museum = place(3, "박물관", "문화,예술 > 문화시설 > 박물관", 37.76, 128.90)
     places = {1: cafe, 2: dinner, 3: museum}
-    short = [(DAY, [row(1, "PLACE", 1, time(14), time(15)), row(2, "MEAL", 2, time(16, 30), time(17, 30))])]
+    # 60 minutes: below GAP_FILL_MIN_MINUTES (85).
+    short = [(DAY, [row(1, "PLACE", 1, time(14), time(15)), row(2, "MEAL", 2, time(16), time(17))])]
     svc = service()
     assert svc._fill_long_gaps(short, places, SimpleNamespace(trip_id=1, transport_mode="CAR")) is short
 

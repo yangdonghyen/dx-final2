@@ -54,8 +54,10 @@ PLAN_FORMAT = {
                                 "item_type": {"type": "string", "enum": sorted(ALLOWED_ITEM_TYPES)},
                                 "title": {"type": "string"},
                                 "place_id": {"type": ["integer", "null"]},
-                                "start_time": {"type": "string"},
-                                "end_time": {"type": "string"},
+                                # 24-hour HH:MM.  Without the pattern a one-day
+                                # trip came back with "TBD" for every time.
+                                "start_time": {"type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"},
+                                "end_time": {"type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"},
                             },
                             "required": ["sequence", "item_type", "title", "place_id", "start_time", "end_time"],
                         },
@@ -74,7 +76,7 @@ Use only candidate place_id/name pairs. Never invent places, events, coordinates
 
 REST and FREE_TIME are place-less intervals and must use place_id null. A restful visit to a supplied cafe, attraction, or other candidate is still a candidate visit: output that candidate's exact name and place_id, with the verified item_type (PLACE or MEAL), not REST or FREE_TIME. Use REST or FREE_TIME only when there is no specific place.
 
-Include every trip date exactly once in chronological order. Within a day, sequences start at 1, items and non-overlapping times are chronological. Use category/activity_kind and verified event dates/opening hours only; keep a visit inside verified hours and never schedule a verified closure. Coordinates are for preliminary grouping only: do not claim route feasibility or travel facts. The backend verifies routes and times.
+Include every trip date exactly once in chronological order. Within a day, sequences start at 1, items and non-overlapping times are chronological. Every start_time and end_time is a concrete 24-hour HH:MM time such as 09:30, never a placeholder. Use category/activity_kind and verified event dates/opening hours only; keep a visit inside verified hours and never schedule a verified closure. Keep each day's stops in one area: put candidates with nearby coordinates on the same day instead of crossing the region within a day. Coordinates are for preliminary grouping only: do not claim route feasibility or travel facts. The backend verifies routes and times.
 
 Respect preferences, companions, canonical_interests and preference_context (SEA=beach, CITY=urban, REST=restful). SLOW means fewer intensive stops and real REST where possible; STANDARD is normal density; FOOD_FOCUSED favors suitable food without replacing available non-food activities. NON_FOOD_ACTIVITY is the backbone when available. Restaurants are lunch (11:30-13:30) or dinner (17:30-19:30), at most one of each daily; cafes are normally at most one daily (two only for CAFE or FOOD_FOCUSED).
 
@@ -468,14 +470,17 @@ class ExaonePlanGenerationProvider:
                             )))
                         else:
                             seen_place_ids[place_id] = visit_date
-                    if not isinstance(start_value, str) or not isinstance(end_value, str):
+                    if not isinstance(start_value, str) or not isinstance(end_value, str) or not start_value or not end_value:
+                        logger.info("exaone_invalid_time sequence=%s start=%r end=%r", sequence, start_value, end_value)
                         cls._parse_error("invalid_time")
                     try:
                         start_time = time.fromisoformat(start_value)
                         end_time = time.fromisoformat(end_value)
                     except ValueError:
+                        logger.info("exaone_invalid_time sequence=%s start=%r end=%r", sequence, start_value, end_value)
                         cls._parse_error("invalid_time")
                     if start_time.tzinfo is not None or end_time.tzinfo is not None or end_time < start_time:
+                        logger.info("exaone_invalid_time sequence=%s start=%r end=%r", sequence, start_value, end_value)
                         cls._parse_error("invalid_time")
                     sequences.add(sequence)
                     timed_items.append((start_time, end_time))

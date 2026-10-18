@@ -10,10 +10,17 @@ class AiWorkingIndicator extends StatefulWidget {
     super.key,
     required this.title,
     this.messages = planningMessages,
+    this.expectedDuration = averagePlanDuration,
   });
 
   final String title;
   final List<String> messages;
+
+  /// How long the job usually takes; the messages are spread evenly over it.
+  final Duration expectedDuration;
+
+  /// Average of the measured EXAONE plan generations (6 runs, 53~114s).
+  static const averagePlanDuration = Duration(seconds: 80);
 
   static const planningMessages = [
     '여행 지도를 펼치는 중이에요 🗺️',
@@ -45,7 +52,9 @@ class _AiWorkingIndicatorState extends State<AiWorkingIndicator> {
   @override
   void initState() {
     super.initState();
-    _timer = Timer.periodic(const Duration(milliseconds: 2800), (_) {
+    // 평균 생성 시간 ÷ 문구 수: 마지막 문구가 평균 완료 시점쯤 나옵니다.
+    final step = widget.expectedDuration ~/ widget.messages.length;
+    _timer = Timer.periodic(step, (_) {
       if (!mounted) return;
       setState(() {
         // 마지막 문구에서 멈춰 끝없이 도는 느낌을 줄입니다.

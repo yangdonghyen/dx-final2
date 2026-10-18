@@ -25,6 +25,18 @@ class YouTubeSavedDiscoveryRepository:
             )
         )
 
+    def known_representative_image(self, destination_name: str) -> str | None:
+        """An image already chosen for this region by an earlier save, if any."""
+        return self.session.scalar(
+            select(YouTubeSavedDiscovery.representative_image_url)
+            .where(
+                YouTubeSavedDiscovery.destination_name == destination_name,
+                YouTubeSavedDiscovery.representative_image_url.is_not(None),
+            )
+            .order_by(YouTubeSavedDiscovery.saved_discovery_id.desc())
+            .limit(1)
+        )
+
     def list_for_user(self, user_id: int):
         return list(
             self.session.scalars(

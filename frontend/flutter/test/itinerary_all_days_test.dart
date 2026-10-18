@@ -72,7 +72,7 @@ void main() {
     await tester.tap(find.textContaining('영업시간이 확인되지 않은 장소 2곳'));
     await tester.pumpAndSettle();
     expect(find.text('- 첫날장소'), findsOneWidget);
-  });
+  }, skip: !showPlanWarnings); // hidden for the demo video
 
   testWidgets('the map folds and unfolds on the DAY view', (tester) async {
     await _pump(tester);

@@ -86,6 +86,10 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            // R8 shrinking crashed the release app at launch on Android 10
+            // (SM-G960N: ExceptionInInitializerError cast in a coroutine).
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }

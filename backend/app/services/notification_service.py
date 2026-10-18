@@ -47,6 +47,14 @@ class NotificationService:
         except Exception as error:  # never block the join itself
             logger.info("notification_failed kind=MEMBER_JOINED reason=%s", type(error).__name__)
 
+    def member_left(self, trip, member):
+        """The trip owner learns that a companion left the shared trip."""
+        try:
+            self._add(trip.user_id, trip.trip_id, "MEMBER_LEFT", "동행자가 나갔어요",
+                      f"{person_label(member)}이 '{trip_label(trip)}'에서 나갔어요.")
+        except Exception as error:
+            logger.info("notification_failed kind=MEMBER_LEFT reason=%s", type(error).__name__)
+
     def plan_edited(self, trip, editor_id, detail):
         """Everyone on the trip except the editor learns about the change."""
         try:

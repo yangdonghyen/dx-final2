@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'notification_service.dart';
 import 'weather_service.dart';
 
 /// Android 시스템 알림 전용 서비스입니다. 앱 내부 여행 알림과 분리합니다.
@@ -47,6 +48,16 @@ class WeatherNotificationService {
       return;
     }
 
+    // The bell (알림함) keeps today's alert too, even without OS permission.
+    final today = now ?? DateTime.now();
+    final bellContent = _notificationContent(condition);
+    NotificationService.setWeatherNotice(
+      plan: heat ? 3 : 2,
+      day: '${today.year}${today.month}${today.day}',
+      title: bellContent.title,
+      body: bellContent.body,
+    );
+
     try {
       await _ensureInitialized();
 
@@ -84,6 +95,29 @@ class WeatherNotificationService {
       await preferences.setBool(sentKey, true);
     } catch (_) {
       // 알림 권한/플랫폼 오류는 날씨 조회 결과에 영향을 주지 않습니다.
+    }
+  }
+
+  /// A companion joined or edited the trip: a phone notification too.
+  Future<void> showTripUpdate(String title, String body) async {
+    try {
+      await _ensureInitialized();
+      await _notifications.show(
+        id: DateTime.now().millisecondsSinceEpoch ~/ 1000 % 100000,
+        title: title,
+        body: body,
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'trip_updates',
+            '동행자 알림',
+            channelDescription: '동행자가 여행에 참여하거나 일정을 수정했을 때',
+            importance: Importance.high,
+            priority: Priority.high,
+          ),
+        ),
+      );
+    } catch (_) {
+      // The popup in the app still shows it.
     }
   }
 

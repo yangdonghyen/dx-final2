@@ -76,7 +76,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
     expect((await TripDraftStore.load())?['transport'], ['택시']); // one transport mode is selected at a time
-  });
+  }, skip: !restoreTripDraft); // off for the demo video
 
   testWidgets('a draft started for another place does not reopen at its step', (tester) async {
     // Demo: a YouTube video (강릉) opened trip creation at step 3 of an old draft.

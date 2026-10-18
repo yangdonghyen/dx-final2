@@ -1,5 +1,6 @@
 ﻿from datetime import date, time
 
+import copy
 import logging
 import threading
 import time as clock
@@ -288,21 +289,79 @@ REPAIR_MAX_RESTAURANT_ALTERNATIVES = 2
 REST_CAFE_ROUTE_CALLS = 12
 # Off-route meal review: route calls per request, closer restaurants
 # measured per meal, and the verified travel a swap must save.
-FAR_MEAL_ROUTE_CALLS = 8
+FAR_MEAL_ROUTE_CALLS = 24  # 2 legs for the meal + 2 per alternative, for each far meal
 FAR_MEAL_ALTERNATIVES = 3
 FAR_MEAL_SEARCH_METERS = 3000
+# Each trip day gets one area: candidates farther than this (straight line)
+# from every day's area centre are left out.  A Seoul day trip zigzagged
+# 잠실 → 동대문 → 송파 → 마포 with a citywide pool.
+COMPACT_RADIUS_METERS = 6000
+COMPACT_RADIUS_METERS_BY_MODE = {"CAR": 15000}
 FAR_MEAL_SEARCH_LIMIT = 8
 # A daytime hole this long (trip 109: 15:00-17:30 before dinner) gets one
 # more verified, unused sight from the pool when real routes and opening
 # hours fit; otherwise the day is left as it was.
-GAP_FILL_MIN_MINUTES = 120
+GAP_FILL_MIN_MINUTES = 85  # 116- and 87-minute afternoon gaps stayed empty at 120 / 100
 GAP_FILL_STAY_MINUTES = (45, 90)
 GAP_FILL_MAX_METERS = 15000
+TRANSIT_WALK_FALLBACK_METERS = 800  # transit gave no route up to ~700 m
+# Without a car a filler this far is an hour away (부산: 이재모피자 → 해운대
+# 블루라인파크, 77 minutes by transit), so the radius is smaller.
+GAP_FILL_MAX_METERS_BY_MODE = {"PUBLIC_TRANSIT": 6000, "WALK": 3000}
 GAP_FILL_BUFFER_MINUTES = 10
 LATE_VISIT_START = time(19, 30)
+# A visit the model ran past this is dropped before travel times are added.
+NIGHT_VISIT_END = time(20, 30)
+# A dinner starting this late (20:45 after three evening sights in a Seoul
+# day trip) loses the sights before it that start from LATE_DINNER_TRIM_FROM.
+LATE_DINNER_START = time(19, 45)
+FINAL_DAY_LAST_START = time(17, 30)  # a 18:05 last-day dinner still ended past 19:00
+# Approximate Korean sunset by month (mid-month, rounded down).  An outdoor
+# sight is not planned into the dark: 금산 until 18:14, 안목해변 until 18:52
+# in November~December.
+SUNSET_BY_MONTH = {1: time(17, 40), 2: time(18, 10), 3: time(18, 35), 4: time(19, 0), 5: time(19, 25),
+                   6: time(19, 45), 7: time(19, 40), 8: time(19, 15), 9: time(18, 40), 10: time(18, 0),
+                   11: time(17, 25), 12: time(17, 15)}
+OUTDOOR_WORDS = ("해수욕장", "해변", "해안", "공원", "오름", "숲", "둘레길", "올레", "전망대", "계곡", "폭포",
+                 "휴양림", "수목원", "저수지", "유원지", "스카이워크", "등산", "산림", "남파랑길", "해파랑길",
+                 "봉우리", "일출봉")
+OUTDOOR_MIN_VISIT_MINUTES = 45
+REGROUP_MAX_SWAPS = 4
+REGROUP_MIN_GAIN_METERS = 3000
+LATE_DINNER_TRIM_FROM = time(17, 0)
+# Usual stay lengths (minutes).  Longer model slots are shortened.
+MEAL_STAY_CAP_MINUTES = 90
+SIGHT_STAY_CAP_MINUTES = 150
+STAY_CAPS_MINUTES = (
+    (("테마파크", "놀이공원", "워터파크", "아쿠아리움", "케이블카"), 150),
+    (("해수욕장", "해변", "해안", "공원", "산책", "전망대", "스카이워크", "등대", "시장", "거리", "마을"), 90),
+    (("박물관", "미술관", "전시", "기념관", "과학관"), 120),
+)
+# Lunch should start by this time when a cafe or rest sits just before it.
+LUNCH_LATEST_START = time(13, 0)
+# A day that ends this early gets nearby sights (and dinner) appended.
+AFTERNOON_END_TARGET = time(16, 30)
+LAST_DAY_END_TARGET = time(15, 0)
+EXTEND_MAX_SIGHTS_PER_DAY = 2
+LONG_FREE_TIME_MINUTES = 120
+EXTEND_SIGHT_MINUTES = 90
+DINNER_START = time(17, 30)
+DINNER_MINUTES = 75
+# A missing lunch is added into an idle gap at least this long (11:00~13:30).
+LUNCH_GAP_MINUTES = 70
+LUNCH_MINUTES = 60
+LUNCH_INSERT_REASON = "점심 시간이 비어 가까운 식당을 넣었어요."
+EXTEND_REASON = "오후 일정이 비어 가까운 볼거리를 넣었어요."
+EXTEND_DINNER_REASON = "저녁 식사 시간이라 가까운 식당을 넣었어요."
 CODE_TITLES = {"FREE_TIME": "자유 시간", "REST": "휴식", "MEAL": "식사", "PLACE": "방문"}
 GAP_FILL_REASON = "빈 시간에 가까운 관광지를 넣었어요."
 FAR_MEAL_MIN_GAIN_SECONDS = 15 * 60
+# A sight farther than this (straight line) from both stops around it is
+# off the day's area (제주: 애월 at 09:00, then 성산 all afternoon).
+FAR_SIGHT_METERS_BY_MODE = {"CAR": 15000, "PUBLIC_TRANSIT": 6000, "WALK": 3000}
+FAR_SIGHT_METERS = 8000
+FAR_SIGHT_ROUTE_CALLS = 24
+FAR_SIGHT_REASON = "원래 장소가 같은 날 다른 일정과 멀어, 가까운 볼거리로 바꿨어요."
 FAR_MEAL_REASON = "원래 식당이 앞뒤 일정과 멀어, 실제 이동시간이 확인된 더 가까운 식당으로 바꿨습니다."
 ROUTE_REPAIR_RESTAURANT_REASON = (
     "확인된 이동시간으로 기존 식당의 식사 시간이 맞지 않아, 같은 식사 시간에 "
@@ -427,10 +486,26 @@ INTEREST_CATEGORY_TOKENS = {
 }
 
 
+DESSERT_NAME_WORDS = ("빙수", "디저트", "베이커리", "제과", "아이스크림", "젤라또", "케이크", "도넛", "와플", "마카롱", "탕후루")
+
+
+def _is_dessert_shop(place) -> bool:
+    """A snack/dessert shop that is not a cafe: never a lunch or dinner.
+    Cafes keep their own role (rest stops)."""
+    if is_cafe(place):
+        return False
+    name = (getattr(place, "name", None) or "").replace(" ", "")
+    category = (getattr(place, "category", None) or "").replace(" ", "")
+    return "간식" in category or any(word in name for word in DESSERT_NAME_WORDS)
+
+
 def _is_usable_plan_candidate(place) -> bool:
     name = getattr(place, "name", None) or ""
     category = getattr(place, "category", None) or ""
     searchable = f"{name} {category}".replace(" ", "").casefold()
+
+    if _is_dessert_shop(place):
+        return False
 
     if any(
         keyword.replace(" ", "").casefold() in searchable
@@ -837,9 +912,19 @@ class PlanGenerationService:
     def _route_estimate(self, first, second, transport_mode):
         if any(getattr(place, value, None) is None for place in (first, second) for value in ("latitude", "longitude")):
             return None
-        return self.route_provider.route(
+        estimate = self.route_provider.route(
             float(first.latitude), float(first.longitude), float(second.latitude), float(second.longitude), transport_mode
         )
+        if estimate is None and transport_mode == "PUBLIC_TRANSIT":
+            # Kakao transit has no route for stops a few hundred metres apart
+            # (a cafe next to the beach), which made every nearby replacement
+            # "unverified".  The verified walking route is the real way there.
+            meters = distance_meters(first, second)
+            if meters is not None and meters <= TRANSIT_WALK_FALLBACK_METERS:
+                estimate = self.route_provider.route(
+                    float(first.latitude), float(first.longitude), float(second.latitude), float(second.longitude), "WALK"
+                )
+        return estimate
 
     def _mobility_candidates(self, candidates, anchors, trip, preferences):
         """Apply factual routing constraints when data exists.
@@ -1118,6 +1203,7 @@ class PlanGenerationService:
         self._append_unique(candidates, self._activity_backfill(trip, candidates, targets["sights"], targets["areas"]))
         self._append_unique(candidates, self._meal_backfill(trip, candidates, targets["restaurants"]))
         candidates = self._drop_same_location(candidates, anchor_ids)
+        candidates = self._drop_same_location(self._compact_candidates(candidates, anchors, trip, targets), anchor_ids)
         if len(candidates) < MIN_PLAN_CANDIDATES:
             raise AppError(
                 "INSUFFICIENT_PLACE_CANDIDATES",
@@ -1303,6 +1389,65 @@ class PlanGenerationService:
         )
         return found
 
+    def _compact_candidates(self, candidates, anchors, trip, targets):
+        """A day trip, or each day of a trip without a car, stays in one
+        area.  Centres are the anchors, then the sight
+        with the most other sights within the radius, each new centre
+        outside every earlier centre's radius.  Candidates outside every
+        centre's radius are left out; a centre short of sights or
+        restaurants gets verified ones from a nearby search.  When the
+        result would still be short, the pool is returned unchanged."""
+        trip_days = (trip.end_date - trip.start_date).days + 1
+        if trip_days > 1 and getattr(trip, "transport_mode", None) not in {"PUBLIC_TRANSIT", "WALK"}:
+            # By car a longer trip keeps its spread of areas (one per day is
+            # asked of the model instead).  Without a car each day gets one
+            # area: a Busan trip by transit spent 60 minutes on most legs.
+            return candidates
+        radius = COMPACT_RADIUS_METERS_BY_MODE.get(getattr(trip, "transport_mode", None), COMPACT_RADIUS_METERS)
+        anchor_ids = {anchor.place_id for anchor in anchors}
+
+        def located(place):
+            return getattr(place, "latitude", None) is not None and getattr(place, "longitude", None) is not None
+
+        def near(first, second):
+            meters = distance_meters(first, second)
+            return meters is not None and meters <= radius
+
+        sights = [place for place in candidates if located(place) and not _is_food_or_cafe(place)]
+        centers = [anchor for anchor in anchors if located(anchor)]
+        while len(centers) < trip_days:
+            free = [place for place in sights if not any(near(place, center) for center in centers)]
+            if not free:
+                break
+            centers.append(max(free, key=lambda place: sum(1 for other in sights if near(place, other))))
+        if not centers:
+            return candidates
+        kept = [place for place in candidates
+                if place.place_id in anchor_ids or (located(place) and any(near(place, center) for center in centers))]
+        if len(kept) == len(candidates):
+            return candidates  # already in one area: no extra searches
+        used = {place.place_id for place in kept}
+        per_day_sights = max(2, targets["sights"] // trip_days)
+        for center in centers:
+            area = [place for place in kept if located(place) and near(place, center)]
+            if sum(1 for place in area if not _is_food_or_cafe(place)) < per_day_sights:
+                extra = [place for place in self._sights_near(center, trip, used) if near(place, center)]
+                kept.extend(extra[:per_day_sights])
+                used.update(place.place_id for place in extra[:per_day_sights])
+            if sum(1 for place in area if is_restaurant(place)) < 2:
+                extra = [place for place in self._restaurants_near(center, trip, used) if not _is_dessert_shop(place)]
+                kept.extend(extra[:2])
+                used.update(place.place_id for place in extra[:2])
+        kept_sights = sum(1 for place in kept if not _is_food_or_cafe(place))
+        kept_restaurants = sum(1 for place in kept if is_restaurant(place))
+        enough = kept_sights >= min(len(sights), trip_days * 2) and kept_restaurants >= trip_days * 2
+        logger.info(
+            "plan_candidates_compacted trip_id=%s days=%s centers=%s radius_m=%s before=%s after=%s sights=%s restaurants=%s applied=%s",
+            getattr(trip, "trip_id", None), trip_days, len(centers), radius, len(candidates), len(kept),
+            kept_sights, kept_restaurants, enough,
+        )
+        return kept if enough else candidates
+
     @staticmethod
     def _drop_same_location(candidates, anchor_ids):
         """Keep one row per real spot (two Kakao entries can share one address)."""
@@ -1476,6 +1621,7 @@ class PlanGenerationService:
                 used.add(item.place_id)
                 day.items[index] = PlanDraftItem(item.sequence, self._canonical_item_type(place), place.name, item.place_id, item.start_time, item.end_time, item.recommendation_reason)
         self._normalize_cafe_durations(draft, candidate_places, anchor_ids)
+        self._normalize_stay_durations(draft, candidate_places, anchor_ids)
         # An omitted anchor can safely replace a factual-free slot; the anchor
         # itself is verified candidate data, never a fabricated place.
         for day in draft.days:
@@ -1515,6 +1661,45 @@ class PlanGenerationService:
                 day.items[slot] = PlanDraftItem(item.sequence, self._canonical_item_type(place), place.name, place_id, item.start_time, item.end_time, item.recommendation_reason)
                 used.add(place_id)
         return draft
+
+    @staticmethod
+    def _stay_cap_minutes(item, place):
+        """Longest sensible stay by kind; None keeps the model's length."""
+        text = f"{getattr(place, 'name', '') or ''} {getattr(place, 'category', '') or ''}".replace(" ", "")
+        if item.item_type == "MEAL" or is_restaurant(place):
+            return MEAL_STAY_CAP_MINUTES
+        for words, cap in STAY_CAPS_MINUTES:
+            if any(word in text for word in words):
+                return cap
+        return SIGHT_STAY_CAP_MINUTES
+
+    @classmethod
+    def _normalize_stay_durations(cls, draft, candidate_places, anchor_ids):
+        """3 hours at a beach or 2 hours of 칼국수 (seen in real plans) are
+        shortened to a usual length.  Only the end moves earlier; the freed
+        time is later filled or left as a gap, never invented."""
+        for day in draft.days:
+            for index, item in enumerate(day.items):
+                place = candidate_places.get(item.place_id)
+                if place is None or item.place_id in anchor_ids or is_cafe(place):
+                    continue
+                cap = cls._stay_cap_minutes(item, place)
+                try:
+                    start, end = time.fromisoformat(item.start_time), time.fromisoformat(item.end_time)
+                except (TypeError, ValueError):
+                    continue
+                duration = (end.hour * 60 + end.minute) - (start.hour * 60 + start.minute)
+                if cap is None or duration <= cap:
+                    continue
+                finish = start.hour * 60 + start.minute + cap
+                day.items[index] = PlanDraftItem(
+                    item.sequence, item.item_type, item.title, item.place_id,
+                    item.start_time, f"{finish // 60:02d}:{finish % 60:02d}", item.recommendation_reason,
+                )
+                logger.info(
+                    "plan_stay_duration_normalized visit_date=%s sequence=%s place_id=%s from_minutes=%s to_minutes=%s",
+                    day.visit_date, item.sequence, item.place_id, duration, cap,
+                )
 
     @staticmethod
     def _normalize_cafe_durations(draft, candidate_places, anchor_ids):
@@ -1593,6 +1778,70 @@ class PlanGenerationService:
             return "more_quality_warnings"
         return None
 
+    def _regroup_days(self, draft, candidate_places, anchor_ids, trip):
+        """Trade sights between days so each day stays in its own area.
+
+        The model spread one city's areas over every day (부산: 광안리 and
+        감천 on day 1, 송도 and 오륙도 on day 2).  Two non-anchor sights on
+        different days swap places (each keeps the other's time slot) when
+        that shortens the trip's straight-line route by REGROUP_MIN_GAIN_METERS
+        and both fit their new date's verified hours.  The result is kept only
+        if it passes the same checks as the model draft.  Multi-day only."""
+        if len(draft.days) < 2:
+            return draft
+        trip_id = getattr(trip, "trip_id", None)
+
+        def clock(value):
+            try:
+                return time.fromisoformat(value) if value else None
+            except (TypeError, ValueError):
+                return None
+
+        def movable(item):
+            place = candidate_places.get(item.place_id) if item.place_id is not None else None
+            return (place is not None and item.item_type == "PLACE" and item.place_id not in anchor_ids
+                    and not _is_food_or_cafe(place) and not is_event_candidate(place)
+                    and place.latitude is not None and place.longitude is not None)
+
+        current = copy.deepcopy(draft)
+        best_length = route_length(current.days, candidate_places)[0]
+        swaps = []
+        for _ in range(REGROUP_MAX_SWAPS):
+            best = None
+            for a in range(len(current.days)):
+                for b in range(a + 1, len(current.days)):
+                    day_a, day_b = current.days[a], current.days[b]
+                    for i, first in enumerate(day_a.items):
+                        if not movable(first):
+                            continue
+                        for j, second in enumerate(day_b.items):
+                            if not movable(second):
+                                continue
+                            p1, p2 = candidate_places[first.place_id], candidate_places[second.place_id]
+                            if opening_hours_match(p2, day_a.visit_date, clock(first.start_time), clock(first.end_time)) is False:
+                                continue
+                            if opening_hours_match(p1, day_b.visit_date, clock(second.start_time), clock(second.end_time)) is False:
+                                continue
+                            day_a.items[i] = replace(first, place_id=second.place_id, title=second.title, item_type=second.item_type)
+                            day_b.items[j] = replace(second, place_id=first.place_id, title=first.title, item_type=first.item_type)
+                            length = route_length(current.days, candidate_places)[0]
+                            day_a.items[i], day_b.items[j] = first, second
+                            if length < best_length - REGROUP_MIN_GAIN_METERS and (best is None or length < best[0]):
+                                best = (length, a, i, b, j)
+            if best is None:
+                break
+            length, a, i, b, j = best
+            first, second = current.days[a].items[i], current.days[b].items[j]
+            current.days[a].items[i] = replace(first, place_id=second.place_id, title=second.title, item_type=second.item_type)
+            current.days[b].items[j] = replace(second, place_id=first.place_id, title=first.title, item_type=first.item_type)
+            swaps.append((first.place_id, second.place_id, round(best_length - length)))
+            best_length = length
+        if not swaps:
+            return draft
+        reason = self._checked(current, draft, candidate_places, trip)
+        logger.info("plan_days_regrouped trip_id=%s swaps=%s applied=%s", trip_id, swaps, reason is None)
+        return current if reason is None else draft
+
     def _optimize_routes(self, draft, candidate_places, anchor_ids, trip, preferences=None):
         """Initial generation only: same-slot swaps that shorten each day's route.
 
@@ -1670,6 +1919,104 @@ class PlanGenerationService:
             report.get("reverted") or report.get("rest_reverted"),
         )
         return chosen
+
+    def _replace_far_sights(self, draft, candidate_places, anchor_ids, trip):
+        """Swap a sight that sits far from both of its neighbours for an
+        unused verified sight near them, in the same time slot, when verified
+        legs save at least FAR_MEAL_MIN_GAIN_SECONDS.  Mirrors
+        ``_replace_far_meals``; anchors, meals and cafes are never touched and
+        any unknown leg keeps the original.  Initial generation only."""
+        if self.route_provider is None or isinstance(self.route_provider, UnavailableRouteProvider):
+            return draft
+        mode = getattr(trip, "transport_mode", None)
+        trip_id = getattr(trip, "trip_id", None)
+        limit = FAR_SIGHT_METERS_BY_MODE.get(mode, FAR_SIGHT_METERS)
+        used = {item.place_id for day in draft.days for item in day.items if item.place_id is not None}
+        cached = isinstance(self.route_provider, CachedRouteProvider)
+
+        def clock(value):
+            try:
+                return time.fromisoformat(value) if value else None
+            except (TypeError, ValueError):
+                return None
+
+        def seconds(first, second):
+            estimate = self._route_estimate(first, second, mode)
+            duration = getattr(estimate, "duration_seconds", None)
+            return duration if isinstance(duration, int) and not isinstance(duration, bool) and duration > 0 else None
+
+        def legs(place, neighbours):
+            total = 0
+            for neighbour, incoming in neighbours:
+                value = seconds(neighbour, place) if incoming else seconds(place, neighbour)
+                if value is None:
+                    return None
+                total += value
+            return total
+
+        def gap(place, other):
+            meters = distance_meters(place, other)
+            return float("inf") if meters is None else meters
+
+        def is_sight(place):
+            return place is not None and not _is_food_or_cafe(place) and not is_event_candidate(place)
+
+        with self.route_provider.limited_phase(FAR_SIGHT_ROUTE_CALLS) if cached else nullcontext():
+            for day in draft.days:
+                located = sorted(
+                    (item for item in day.items if item.place_id in candidate_places and clock(item.start_time)),
+                    key=lambda item: (clock(item.start_time), item.sequence),
+                )
+                for position, item in enumerate(located):
+                    place = candidate_places[item.place_id]
+                    if item.place_id in anchor_ids or item.item_type != "PLACE" or not is_sight(place):
+                        continue
+                    neighbours = [(candidate_places[located[position - 1].place_id], True)] if position > 0 else []
+                    if position + 1 < len(located):
+                        neighbours.append((candidate_places[located[position + 1].place_id], False))
+                    if not neighbours:
+                        continue
+                    nearest = min(gap(place, other) for other, _ in neighbours)
+                    if nearest <= limit:
+                        continue
+                    start, end = clock(item.start_time), clock(item.end_time)
+                    for found in self._sights_near(neighbours[-1][0], trip, used):
+                        candidate_places.setdefault(found.place_id, found)
+                    used_places = [candidate_places[place_id] for place_id in used if place_id in candidate_places]
+                    alternatives = sorted(
+                        (sum(gap(other_place, other) for other, _ in neighbours), place_id)
+                        for place_id, other_place in candidate_places.items()
+                        if place_id not in used and is_sight(other_place)
+                        and opening_hours_match(other_place, day.visit_date, start, end) is not False
+                        and all(gap(other_place, other) < nearest for other, _ in neighbours)
+                        and not any(same_location(other_place, other) for other in used_places)
+                    )[:FAR_MEAL_ALTERNATIVES]
+                    outcome = {"visit_date": day.visit_date.isoformat() if day.visit_date else None,
+                               "sequence": item.sequence, "place_id": item.place_id,
+                               "nearest_stop_m": round(nearest), "alternatives": len(alternatives)}
+                    original = legs(place, neighbours) if alternatives else None
+                    measured = []
+                    if original is not None:
+                        for _, place_id in alternatives:
+                            value = legs(candidate_places[place_id], neighbours)
+                            if value is not None:
+                                measured.append((value, place_id))
+                    best = min(measured, default=None)
+                    if best is None or original - best[0] < FAR_MEAL_MIN_GAIN_SECONDS:
+                        outcome.update(result="KEPT", original_route_seconds=original, best_route_seconds=best[0] if best else None)
+                    else:
+                        replacement = candidate_places[best[1]]
+                        index = day.items.index(item)
+                        day.items[index] = PlanDraftItem(
+                            item.sequence, self._canonical_item_type(replacement), replacement.name, best[1],
+                            item.start_time, item.end_time, FAR_SIGHT_REASON,
+                        )
+                        located[position] = day.items[index]
+                        used.discard(item.place_id)
+                        used.add(best[1])
+                        outcome.update(result="REPLACED", replaced_by=best[1], original_route_seconds=original, best_route_seconds=best[0])
+                    logger.info("plan_far_sight_review trip_id=%s %s", trip_id, outcome)
+        return draft
 
     def _replace_far_meals(self, draft, candidate_places, anchor_ids, trip):
         """Swap an off-route meal for a verified, clearly closer restaurant.
@@ -1785,6 +2132,25 @@ class PlanGenerationService:
                 logger.info("plan_far_meal_review trip_id=%s %s", trip_id, outcome)
         return draft
 
+    def _drop_night_visits(self, days, anchor_ids, trip):
+        """Before real travel times are added: a non-anchor visit that the
+        model ran past NIGHT_VISIT_END (여수: a sight 19:00~21:00) is dropped,
+        so the shift for travel time cannot push the day past its end and
+        fail the whole plan (ROUTE_TIME_CONFLICT).  Meals and rests stay.
+        Returns ``days`` itself when nothing changed."""
+        changed = False
+        result = []
+        for visit_date, rows in days:
+            kept = [row for row in rows
+                    if row[0].item_type == "MEAL" or row[0].place_id is None or row[0].place_id in anchor_ids
+                    or row[2] <= NIGHT_VISIT_END]
+            if len(kept) != len(rows):
+                changed = True
+                logger.info("plan_night_visits_dropped trip_id=%s visit_date=%s dropped=%s", getattr(trip, "trip_id", None), visit_date,
+                            [row[0].place_id for row in rows if row not in kept])
+            result.append((visit_date, [(replace(item, sequence=number), start, end) for number, (item, start, end) in enumerate(kept, start=1)]))
+        return result if changed else days
+
     def _drop_late_visits(self, days, anchor_ids, trip):
         """A sight or cafe starting at LATE_VISIT_START or later (a museum at
         20:00 after dinner, seen in a redraft) is dropped unless it is an
@@ -1805,6 +2171,158 @@ class PlanGenerationService:
                 logger.info("plan_late_visits_dropped trip_id=%s visit_date=%s dropped=%s", getattr(trip, "trip_id", None), visit_date,
                             [row[0].place_id for row in rows if row not in kept])
             result.append((visit_date, [(replace(item, sequence=number), start, end) for number, (item, start, end) in enumerate(kept, start=1)]))
+        return result if changed else days
+
+    def _tidy_meals_and_stays(self, days, candidate_places, anchor_ids, trip):
+        """Final tidy of the saved rows (meal repairs run after the draft
+        caps): a meal right after another meal (12:30 lunch, then 14:30 밀면)
+        is dropped so the gap can take a sight, and an over-long stay (a
+        2-hour dinner) ends earlier.  Shrinking or dropping only, so no
+        overlap is created; anchors stay.  Returns ``days`` when unchanged."""
+        def minutes(value): return value.hour * 60 + value.minute
+        def clock(total): return time(total // 60, total % 60)
+        changed = False
+        result = []
+        last_date = max((visit_date for visit_date, _ in days), default=None) if len(days) > 1 else None
+        for visit_date, rows in days:
+            kept = []
+            last_meal_end = None
+            for item, start, end in rows:
+                place = candidate_places.get(item.place_id) if item.place_id is not None else None
+                anchored = item.place_id in anchor_ids
+                if item.item_type == "MEAL" and not anchored and last_meal_end is not None and minutes(start) - last_meal_end < 180:
+                    changed = True
+                    logger.info("plan_back_to_back_meal_dropped trip_id=%s visit_date=%s place_id=%s", getattr(trip, "trip_id", None), visit_date, item.place_id)
+                    continue
+                if place is not None and not anchored and not is_cafe(place):
+                    cap = self._stay_cap_minutes(item, place)
+                    if cap is not None and minutes(end) - minutes(start) > cap:
+                        end = clock(minutes(start) + cap)
+                        changed = True
+                if (item.item_type == "FREE_TIME" and item.place_id is None and kept
+                        and minutes(end) - minutes(start) >= LONG_FREE_TIME_MINUTES):
+                    # 2~3 hours of "자유 시간" in the afternoon reads as an
+                    # empty plan; the gap is offered to a nearby sight.
+                    changed = True
+                    continue
+                if item.item_type == "MEAL" and not anchored and place is not None and start >= LATE_DINNER_START:
+                    earlier = self._earlier_dinner(kept, item, place, start, end, candidate_places, anchor_ids, trip)
+                    if earlier is not None:
+                        kept, start, end = earlier
+                        changed = True
+                        logger.info("plan_late_dinner_moved_earlier trip_id=%s visit_date=%s place_id=%s start=%s",
+                                    getattr(trip, "trip_id", None), visit_date, item.place_id, start)
+                if item.item_type == "MEAL":
+                    last_meal_end = minutes(end)
+                kept.append((item, start, end))
+            # No outdoor sight in the dark: one that would start within
+            # OUTDOOR_MIN_VISIT_MINUTES of sunset is dropped, one that runs
+            # past sunset ends at sunset.
+            sunset = SUNSET_BY_MONTH.get(getattr(visit_date, "month", None))
+            if sunset is not None:
+                lit = []
+                for item, start, end in kept:
+                    place = candidate_places.get(item.place_id) if item.place_id is not None else None
+                    if (place is None or item.place_id in anchor_ids or item.item_type != "PLACE"
+                            or not self._is_outdoor(place) or end <= sunset):
+                        lit.append((item, start, end))
+                        continue
+                    changed = True
+                    if minutes(sunset) - minutes(start) < OUTDOOR_MIN_VISIT_MINUTES:
+                        logger.info("plan_outdoor_after_sunset_dropped trip_id=%s visit_date=%s place_id=%s", getattr(trip, "trip_id", None), visit_date, item.place_id)
+                        continue
+                    lit.append((replace(item, end_time=sunset.strftime("%H:%M")), start, sunset))
+                kept = lit
+            # The last day of a multi-day trip ends before the trip home: stops
+            # starting from FINAL_DAY_LAST_START (a 18:13 dinner) are dropped.
+            while (visit_date == last_date and len(kept) > 1 and kept[-1][1] >= FINAL_DAY_LAST_START
+                   and kept[-1][0].place_id not in anchor_ids):
+                logger.info("plan_final_day_late_stop_dropped trip_id=%s visit_date=%s place_id=%s",
+                            getattr(trip, "trip_id", None), visit_date, kept[-1][0].place_id)
+                kept.pop()
+                changed = True
+            # "자유 시간" after dinner (20:30~22:00) is not a plan; drop it.
+            while kept and kept[-1][0].place_id is None and kept[-1][0].item_type in {"FREE_TIME", "REST"} and kept[-1][1] >= LATE_VISIT_START:
+                kept.pop()
+                changed = True
+            result.append((visit_date, [(replace(item, sequence=number), start, end) for number, (item, start, end) in enumerate(kept, start=1)]))
+        return result if changed else days
+
+    @classmethod
+    def _after_dark(cls, place, visit_date, end) -> bool:
+        sunset = SUNSET_BY_MONTH.get(getattr(visit_date, "month", None))
+        return sunset is not None and end > sunset and cls._is_outdoor(place)
+
+    @classmethod
+    def _is_outdoor(cls, place) -> bool:
+        if cls.is_indoor(place) or _is_food_or_cafe(place):
+            return False
+        text = f"{getattr(place, 'name', None) or ''} {getattr(place, 'category', None) or ''}"
+        return any(word in text for word in OUTDOOR_WORDS) or text.rstrip().endswith("산")
+
+    def _earlier_dinner(self, kept, item, place, start, end, candidate_places, anchor_ids, trip):
+        """Drops the non-anchor sights before a late dinner that start from
+        LATE_DINNER_TRIM_FROM, and starts dinner after the last remaining stop
+        plus the verified leg (not before DINNER_START).  None when there is
+        nothing to drop, no verified leg, or no earlier start results."""
+        def minutes(value): return value.hour * 60 + value.minute
+        def clock(total): return time(total // 60, total % 60)
+        rows = list(kept)
+        dropped = False
+        while (rows and rows[-1][0].item_type != "MEAL" and rows[-1][0].place_id not in anchor_ids
+               and rows[-1][1] >= LATE_DINNER_TRIM_FROM):
+            rows.pop()
+            dropped = True
+        while rows and rows[-1][0].place_id is None:
+            rows.pop()
+        if not dropped or not rows:
+            return None
+        previous = candidate_places.get(rows[-1][0].place_id)
+        estimate = self._route_estimate(previous, place, getattr(trip, "transport_mode", None)) if previous is not None else None
+        seconds = getattr(estimate, "duration_seconds", None)
+        if not isinstance(seconds, int) or isinstance(seconds, bool) or seconds <= 0:
+            return None
+        new_start = max(minutes(DINNER_START), minutes(rows[-1][2]) + -(-seconds // 60))
+        new_start += (-new_start) % 5
+        if new_start >= minutes(start):
+            return None
+        return rows, clock(new_start), clock(new_start + minutes(end) - minutes(start))
+
+    def _lunch_before_cafe(self, days, candidate_places, anchor_ids, trip):
+        """A cafe (or rest) at 12:30 followed by lunch at 14:00 (seen in real
+        plans) becomes lunch first, then the cafe: the two stops swap their
+        places in time, each keeping its own length.  Anchors stay put and the
+        result is validated by the caller (reverted on any route/hours error).
+        Returns ``days`` itself when nothing changed."""
+        changed = False
+        result = []
+        for visit_date, rows in days:
+            rows = list(rows)
+            for index in range(1, len(rows)):
+                meal, meal_start, meal_end = rows[index]
+                before, before_start, before_end = rows[index - 1]
+                if meal.item_type != "MEAL" or meal_start <= LUNCH_LATEST_START or meal_start >= time(15, 0):
+                    continue
+                # Any stop before a late lunch (cafe, rest, or a sight such as
+                # a museum at 11:30~13:30) trades places with the lunch.
+                if before.item_type == "MEAL" or before.place_id in anchor_ids or meal.place_id in anchor_ids or before_start < time(11, 0):
+                    continue
+                def minutes(value): return value.hour * 60 + value.minute
+                def clock(total): return time(total // 60, total % 60)
+                meal_length = minutes(meal_end) - minutes(meal_start)
+                break_length = minutes(before_end) - minutes(before_start)
+                new_meal_start = minutes(before_start)
+                new_break_start = new_meal_start + meal_length
+                new_break_end = new_break_start + break_length
+                next_start = rows[index + 1][1] if index + 1 < len(rows) else None
+                if new_break_end >= 24 * 60 or (next_start is not None and new_break_end > minutes(next_start)):
+                    continue
+                rows[index - 1] = (replace(meal, sequence=before.sequence), clock(new_meal_start), clock(new_meal_start + meal_length))
+                rows[index] = (replace(before, sequence=meal.sequence), clock(new_break_start), clock(new_break_end))
+                changed = True
+                logger.info("plan_lunch_moved_before_cafe trip_id=%s visit_date=%s meal_place_id=%s", getattr(trip, "trip_id", None), visit_date, meal.place_id)
+                break  # one lunch per day
+            result.append((visit_date, rows))
         return result if changed else days
 
     def _fill_long_gaps(self, days, candidate_places, trip):
@@ -1837,6 +2355,11 @@ class PlanGenerationService:
                 previous, start_prev, end_prev = rows[index]
                 following, start_next, _ = rows[index + 1]
                 before = candidate_places.get(previous.place_id) if previous.place_id else None
+                if before is None and previous.item_type in {"REST", "FREE_TIME"}:
+                    # A short rest has no place of its own: the traveler is
+                    # still where the last real stop was.
+                    before = next((candidate_places.get(row[0].place_id) for row in reversed(rows[:index])
+                                   if row[0].place_id is not None and candidate_places.get(row[0].place_id) is not None), None)
                 after = candidate_places.get(following.place_id) if following.place_id else None
                 gap = minutes(start_next) - minutes(end_prev)
                 if before is None or after is None or gap < GAP_FILL_MIN_MINUTES or minutes(end_prev) < 10 * 60:
@@ -1846,8 +2369,20 @@ class PlanGenerationService:
                     (distance_meters(before, place), place_id)
                     for place_id, place in candidate_places.items()
                     if place_id not in used and not _is_food_or_cafe(place) and not is_event_candidate(place)
-                    and distance_meters(before, place) is not None and distance_meters(before, place) <= GAP_FILL_MAX_METERS
+                    and distance_meters(before, place) is not None and distance_meters(before, place) <= GAP_FILL_MAX_METERS_BY_MODE.get(getattr(trip, "transport_mode", None), GAP_FILL_MAX_METERS)
                 )[:3]
+                if not options:
+                    # The pool can hold no unused sight near this part of the
+                    # day (제주 day 1 after the day regrouping: 애월 all morning).
+                    limit = GAP_FILL_MAX_METERS_BY_MODE.get(getattr(trip, "transport_mode", None), GAP_FILL_MAX_METERS)
+                    for found in self._sights_near(before, trip, used):
+                        candidate_places.setdefault(found.place_id, found)
+                    options = sorted(
+                        (distance_meters(before, place), place_id)
+                        for place_id, place in candidate_places.items()
+                        if place_id not in used and not _is_food_or_cafe(place) and not is_event_candidate(place)
+                        and distance_meters(before, place) is not None and distance_meters(before, place) <= limit
+                    )[:3]
                 inserted = False
                 for _, place_id in options:
                     place = candidate_places[place_id]
@@ -1861,7 +2396,7 @@ class PlanGenerationService:
                         continue
                     start = time(arrive // 60, arrive % 60)
                     end = time((arrive + stay) // 60, (arrive + stay) % 60)
-                    if opening_hours_match(place, visit_date, start, end) is False:
+                    if opening_hours_match(place, visit_date, start, end) is False or self._after_dark(place, visit_date, end):
                         continue
                     item = PlanDraftItem(0, self._canonical_item_type(place), place.name, place_id,
                                          start.strftime("%H:%M"), end.strftime("%H:%M"), GAP_FILL_REASON)
@@ -1871,11 +2406,273 @@ class PlanGenerationService:
                     logger.info("plan_gap_filled trip_id=%s visit_date=%s place_id=%s start=%s end=%s gap_minutes=%s",
                                 getattr(trip, "trip_id", None), visit_date, place_id, start, end, gap)
                     break
-                index += 2 if inserted else 1
+                # After a fill the rest of a long gap is checked again (통영:
+                # 320 minutes got one sight and still had 3 hours empty).
+                index += 1
             result.append((visit_date, [
                 (replace(item, sequence=number), start, end) for number, (item, start, end) in enumerate(rows, start=1)
             ]))
         return result if changed else days
+
+    def _insert_missing_lunch(self, days, candidate_places, trip):
+        """A day with no meal starting 11:00~14:00 but an idle gap of at least
+        LUNCH_GAP_MINUTES in that window (올레길 until 11:30, next stop 13:30)
+        gets the nearest unused restaurant from the previous stop, with
+        verified legs both ways.  The caller validates and reverts on any
+        error.  Returns ``days`` itself when nothing changed."""
+        if self.route_provider is None or isinstance(self.route_provider, UnavailableRouteProvider):
+            return days
+        mode = getattr(trip, "transport_mode", None)
+        used = {item.place_id for _, rows in days for item, _, _ in rows if item.place_id is not None}
+        changed = False
+        result = []
+
+        def minutes(value): return value.hour * 60 + value.minute
+        def clock(total): return time(total // 60, total % 60)
+
+        def leg_minutes(first, second):
+            estimate = self._route_estimate(first, second, mode)
+            duration = getattr(estimate, "duration_seconds", None)
+            return -(-duration // 60) if isinstance(duration, int) and duration > 0 else None
+
+        for visit_date, rows in days:
+            rows = list(rows)
+            has_lunch = any(item.item_type == "MEAL" and time(11, 0) <= start <= time(14, 0) for item, start, _ in rows)
+            for index in range(len(rows) - 1):
+                if has_lunch:
+                    break
+                before, after = rows[index], rows[index + 1]
+                origin = candidate_places.get(before[0].place_id) if before[0].place_id is not None else None
+                if origin is None and before[0].item_type in {"REST", "FREE_TIME"}:
+                    # A rest (여수 루지 then 휴식) has no place: the traveler is
+                    # still at the last real stop.
+                    origin = next((candidate_places.get(row[0].place_id) for row in reversed(rows[:index])
+                                   if row[0].place_id is not None and candidate_places.get(row[0].place_id) is not None), None)
+                following = candidate_places.get(after[0].place_id) if after[0].place_id is not None else None
+                gap_start, gap_end = minutes(before[2]), minutes(after[1])
+                if origin is None or following is None or gap_end - gap_start < LUNCH_GAP_MINUTES:
+                    continue
+                if not (minutes(time(11, 0)) <= gap_start <= minutes(time(13, 30))):
+                    continue
+                pool = [place for place_id, place in candidate_places.items()
+                        if place_id not in used and is_restaurant(place) and not _is_dessert_shop(place)
+                        and distance_meters(origin, place) is not None and distance_meters(origin, place) <= FAR_MEAL_SEARCH_METERS]
+                if not pool:
+                    pool = [place for place in self._restaurants_near(origin, trip, used) if not _is_dessert_shop(place)]
+                for place in sorted(pool, key=lambda candidate: distance_meters(origin, candidate) or 1e9)[:3]:
+                    go, back = leg_minutes(origin, place), leg_minutes(place, following)
+                    if go is None or back is None:
+                        continue
+                    arrive = gap_start + go
+                    arrive += (-arrive) % 5
+                    length = min(LUNCH_MINUTES, gap_end - back - arrive)
+                    if length < 45:
+                        continue
+                    start, end = clock(arrive), clock(arrive + length)
+                    if opening_hours_match(place, visit_date, start, end) is False:
+                        continue
+                    candidate_places.setdefault(place.place_id, place)
+                    rows.insert(index + 1, (PlanDraftItem(0, "MEAL", place.name, place.place_id,
+                                                          start.strftime("%H:%M"), end.strftime("%H:%M"), LUNCH_INSERT_REASON), start, end))
+                    used.add(place.place_id)
+                    changed = has_lunch = True
+                    logger.info("plan_missing_lunch_inserted trip_id=%s visit_date=%s place_id=%s start=%s",
+                                getattr(trip, "trip_id", None), visit_date, place.place_id, start)
+                    break
+            if not has_lunch:
+                trimmed = self._lunch_from_long_stay(rows, visit_date, candidate_places, trip, used, leg_minutes)
+                if trimmed is not None:
+                    rows, changed = trimmed, True
+                    logger.info("plan_missing_lunch_after_trimmed_stay trip_id=%s visit_date=%s", getattr(trip, "trip_id", None), visit_date)
+            result.append((visit_date, [
+                (replace(item, sequence=number), start, end) for number, (item, start, end) in enumerate(rows, start=1)
+            ]))
+        return result if changed else days
+
+    def _lunch_from_long_stay(self, rows, visit_date, candidate_places, trip, used, leg_minutes):
+        """No lunch and no gap: a non-anchor sight of 2 hours or more that
+        starts 10:30~12:30 (요기저수지 11:30~13:30) ends after one hour, and
+        the nearest restaurant takes the freed time.  None when nothing fits."""
+        def minutes(value): return value.hour * 60 + value.minute
+        def clock(total): return time(total // 60, total % 60)
+        for index in range(len(rows) - 1):
+            item, start, end = rows[index]
+            place = candidate_places.get(item.place_id) if item.place_id is not None else None
+            following = candidate_places.get(rows[index + 1][0].place_id) if rows[index + 1][0].place_id is not None else None
+            if (place is None or following is None or item.item_type != "PLACE" or _is_food_or_cafe(place)
+                    or not (time(10, 30) <= start <= time(12, 30)) or minutes(end) - minutes(start) < 105):
+                continue
+            new_end = minutes(start) + 60
+            pool = [other for place_id, other in candidate_places.items()
+                    if place_id not in used and is_restaurant(other) and not _is_dessert_shop(other)
+                    and distance_meters(place, other) is not None and distance_meters(place, other) <= FAR_MEAL_SEARCH_METERS]
+            if not pool:
+                # Outside a town (승촌보, 요기저수지) the nearest restaurants
+                # may be near the next stop rather than this one.
+                pool = [other for other in self._restaurants_near(place, trip, used) + self._restaurants_near(following, trip, used)
+                        if not _is_dessert_shop(other)]
+            for restaurant in sorted(pool, key=lambda other: distance_meters(place, other) or 1e9)[:3]:
+                go, back = leg_minutes(place, restaurant), leg_minutes(restaurant, following)
+                if go is None or back is None:
+                    continue
+                arrive = new_end + go
+                arrive += (-arrive) % 5
+                length = min(LUNCH_MINUTES, minutes(rows[index + 1][1]) - back - arrive)
+                if length < 45 or arrive > minutes(time(13, 30)):
+                    continue
+                lunch_start, lunch_end = clock(arrive), clock(arrive + length)
+                if opening_hours_match(restaurant, visit_date, lunch_start, lunch_end) is False:
+                    continue
+                candidate_places.setdefault(restaurant.place_id, restaurant)
+                used.add(restaurant.place_id)
+                trimmed_end = clock(new_end)
+                return rows[:index] + [
+                    (replace(item, end_time=trimmed_end.strftime("%H:%M")), start, trimmed_end),
+                    (PlanDraftItem(0, "MEAL", restaurant.name, restaurant.place_id, lunch_start.strftime("%H:%M"),
+                                   lunch_end.strftime("%H:%M"), LUNCH_INSERT_REASON), lunch_start, lunch_end),
+                ] + rows[index + 1:]
+        return None
+
+    def _extend_short_days(self, days, candidate_places, trip):
+        """A day that ends at 14:00 (seen in real plans) gets up to two
+        nearby unused sights after its last stop, then dinner on every day
+        but the last.  Only verified candidates and verified route legs are
+        used; the caller validates and reverts on any error.  Returns
+        ``days`` itself when nothing changed."""
+        if self.route_provider is None or isinstance(self.route_provider, UnavailableRouteProvider):
+            return days
+        mode = getattr(trip, "transport_mode", None)
+        used = {item.place_id for _, rows in days for item, _, _ in rows if item.place_id is not None}
+        last_date = max((visit_date for visit_date, _ in days), default=None)
+        changed = False
+        result = []
+
+        def minutes(value):
+            return value.hour * 60 + value.minute
+
+        def clock(total):
+            return time(total // 60, total % 60)
+
+        def leg_minutes(first, second):
+            estimate = self._route_estimate(first, second, mode)
+            duration = getattr(estimate, "duration_seconds", None)
+            return -(-duration // 60) if isinstance(duration, int) and duration > 0 else None
+
+        def last_place(rows):
+            for item, _, _ in reversed(rows):
+                place = candidate_places.get(item.place_id) if item.place_id is not None else None
+                if place is not None:
+                    return place
+            return None
+
+        for visit_date, rows in days:
+            rows = list(rows)
+            final_day = visit_date == last_date and len(days) > 1
+            target = LAST_DAY_END_TARGET if final_day else AFTERNOON_END_TARGET
+            added = 0
+            while rows and added < EXTEND_MAX_SIGHTS_PER_DAY and rows[-1][2] < target:
+                origin = last_place(rows)
+                if origin is None:
+                    break
+                used_places = [candidate_places[place_id] for place_id in used if place_id in candidate_places]
+                options = sorted(
+                    (distance_meters(origin, place), place_id)
+                    for place_id, place in candidate_places.items()
+                    if place_id not in used and not _is_food_or_cafe(place) and not is_event_candidate(place)
+                    and distance_meters(origin, place) is not None and distance_meters(origin, place) <= GAP_FILL_MAX_METERS_BY_MODE.get(getattr(trip, "transport_mode", None), GAP_FILL_MAX_METERS)
+                    and not any(same_location(place, other) for other in used_places)
+                )[:3]
+                if not options:
+                    for place in self._sights_near(origin, trip, used):
+                        if not any(same_location(place, other) for other in used_places):
+                            candidate_places.setdefault(place.place_id, place)
+                    options = sorted(
+                        (distance_meters(origin, place), place_id)
+                        for place_id, place in candidate_places.items()
+                        if place_id not in used and not _is_food_or_cafe(place) and not is_event_candidate(place)
+                        and distance_meters(origin, place) is not None and distance_meters(origin, place) <= GAP_FILL_MAX_METERS_BY_MODE.get(getattr(trip, "transport_mode", None), GAP_FILL_MAX_METERS)
+                        and not any(same_location(place, other) for other in used_places)
+                    )[:3]
+                placed = False
+                for _, place_id in options:
+                    place = candidate_places[place_id]
+                    go = leg_minutes(origin, place)
+                    if go is None:
+                        continue
+                    arrive = minutes(rows[-1][2]) + go
+                    arrive += (-arrive) % 5
+                    finish = arrive + EXTEND_SIGHT_MINUTES
+                    if finish >= minutes(LATE_VISIT_START):
+                        continue
+                    start, end = clock(arrive), clock(finish)
+                    if opening_hours_match(place, visit_date, start, end) is False or self._after_dark(place, visit_date, end):
+                        continue
+                    rows.append((PlanDraftItem(0, self._canonical_item_type(place), place.name, place_id,
+                                               start.strftime("%H:%M"), end.strftime("%H:%M"), EXTEND_REASON), start, end))
+                    used.add(place_id)
+                    added += 1
+                    changed = placed = True
+                    logger.info("plan_short_day_extended trip_id=%s visit_date=%s place_id=%s start=%s",
+                                getattr(trip, "trip_id", None), visit_date, place_id, start)
+                    break
+                if not placed:
+                    break
+            has_dinner = any(item.item_type == "MEAL" and start >= time(17, 0) for item, start, _ in rows)
+            # Dinner on every day but the last, once the day reaches the
+            # afternoon (also when no extra sight could be found).
+            if not final_day and not has_dinner and rows and time(14, 0) <= rows[-1][2] <= time(18, 30):
+                origin = last_place(rows)
+                pool = [place for place_id, place in candidate_places.items()
+                        if place_id not in used and is_restaurant(place) and not _is_dessert_shop(place)
+                        and distance_meters(origin, place) is not None and distance_meters(origin, place) <= FAR_MEAL_SEARCH_METERS]
+                if not pool:
+                    pool = [place for place in self._restaurants_near(origin, trip, used) if not _is_dessert_shop(place)]
+                for place in sorted(pool, key=lambda candidate: distance_meters(origin, candidate) or 1e9)[:3]:
+                    go = leg_minutes(origin, place)
+                    if go is None:
+                        continue
+                    arrive = max(minutes(DINNER_START), minutes(rows[-1][2]) + go)
+                    arrive += (-arrive) % 5
+                    start, end = clock(arrive), clock(arrive + DINNER_MINUTES)
+                    if opening_hours_match(place, visit_date, start, end) is False:
+                        continue
+                    candidate_places.setdefault(place.place_id, place)
+                    rows.append((PlanDraftItem(0, "MEAL", place.name, place.place_id,
+                                               start.strftime("%H:%M"), end.strftime("%H:%M"), EXTEND_DINNER_REASON), start, end))
+                    used.add(place.place_id)
+                    changed = True
+                    logger.info("plan_short_day_dinner trip_id=%s visit_date=%s place_id=%s start=%s",
+                                getattr(trip, "trip_id", None), visit_date, place.place_id, start)
+                    break
+            result.append((visit_date, [
+                (replace(item, sequence=number), start, end) for number, (item, start, end) in enumerate(rows, start=1)
+            ]))
+        return result if changed else days
+
+    def _sights_near(self, origin, trip, used):
+        """Verified sights (Kakao AT4 tourist spots, CT1 culture) within
+        NEARBY_RADIUS_METERS of ``origin``, upserted like every candidate.
+        Used when the plan's own pool has no unused sight left.  Provider
+        failures return nothing."""
+        if origin is None or self.place_provider is None or not hasattr(self.place_provider, "search_nearby"):
+            return []
+        if getattr(origin, "latitude", None) is None or getattr(origin, "longitude", None) is None:
+            return []
+        try:
+            found = self.place_provider.search_nearby(
+                float(origin.latitude), float(origin.longitude), NEARBY_RADIUS_METERS, ["AT4", "CT1"], 8
+            )
+            upserted = PlaceSearchService(self.session, self.place_provider, commit=False).upsert_candidates(found, trip.destination) if found else []
+        except AppError:
+            return []
+        places = [self.places.get(row.place_id) for row in upserted]
+        return [
+            place for place in places
+            if place is not None and place.place_id not in used
+            and _is_usable_plan_candidate(place) and not _is_food_or_cafe(place) and not is_event_candidate(place)
+            and place.latitude is not None and place.longitude is not None
+            and self._is_temporally_eligible(place, trip)
+        ]
 
     def _restaurants_near(self, origin, trip, used):
         """Verified restaurants within FAR_MEAL_SEARCH_METERS of ``origin``
@@ -3084,6 +3881,7 @@ class PlanGenerationService:
             draft = self._prepare_draft(draft, candidate_places, anchor_ids, trip, preferences)
             stage("prepare_meals")
             trace.record("prepare_meals", draft)
+            draft = self._regroup_days(draft, candidate_places, anchor_ids, trip)
             draft = self._optimize_routes(draft, candidate_places, anchor_ids, trip, preferences)
             stage("route_optimize")
             trace.record("route_optimize", draft)
@@ -3091,11 +3889,13 @@ class PlanGenerationService:
             stage("rest_cafes")
             trace.record("rest_cafes", draft, {None: "REST_CAFE_SELECTION"})
             draft = self._replace_far_meals(draft, candidate_places, anchor_ids, trip)
+            draft = self._replace_far_sights(draft, candidate_places, anchor_ids, trip)
             stage("far_meals")
             trace.record("far_meals", draft, _trace_causes_by_date(
                 [row for row in getattr(self, "last_far_meal_review", []) if row.get("result") == "REPLACED"], "result",
             ))
             days = self._validate_draft(draft, set(candidate_places))
+            days = self._drop_night_visits(days, anchor_ids, trip)
             days = self._adjust_route_timing(days, candidate_places, trip, anchor_ids, preferences, repair=True)
             stage("route_timing")
             trace.record("route_timing", days, _trace_causes_by_date(
@@ -3108,7 +3908,39 @@ class PlanGenerationService:
             self._validate_temporal_draft(days, candidate_places)
             legs = self._validate_route_timing(days, candidate_places, trip) or {}
             self._validate_activity_diversity(days, candidate_places, trip)
-            filled = self._fill_long_gaps(self._drop_late_visits(days, anchor_ids, trip), candidate_places, trip)
+            base = self._drop_late_visits(days, anchor_ids, trip)
+            # Each polish step is checked on its own, so one that does not
+            # fit the verified routes is undone without losing the others.
+            tidied = self._tidy_meals_and_stays(base, candidate_places, anchor_ids, trip)
+            if tidied is not base:
+                try:
+                    self._validate_temporal_draft(tidied, candidate_places)
+                    self._validate_route_timing(tidied, candidate_places, trip)
+                    base = tidied
+                except AppError as error:
+                    logger.info("plan_tidy_reverted trip_id=%s code=%s", trip_id, error.code)
+            polished = self._lunch_before_cafe(base, candidate_places, anchor_ids, trip)
+            if polished is not base:
+                try:
+                    # The swapped order has new legs: shift for real travel
+                    # time first, exactly as the AI's own order was.
+                    polished = self._adjust_route_timing(polished, candidate_places, trip, anchor_ids, preferences, repair=True)
+                    self._validate_temporal_draft(polished, candidate_places)
+                    self._validate_route_timing(polished, candidate_places, trip)
+                    base = polished
+                except AppError as error:
+                    logger.info("plan_lunch_order_reverted trip_id=%s code=%s", trip_id, error.code)
+            # Lunch first: the gap filler would otherwise put a sight into
+            # the lunch hour (제주: 농특산물전시장 at 11:35, no lunch).
+            lunched = self._insert_missing_lunch(base, candidate_places, trip)
+            if lunched is not base:
+                try:
+                    self._validate_temporal_draft(lunched, candidate_places)
+                    self._validate_route_timing(lunched, candidate_places, trip)
+                    base = lunched
+                except AppError as error:
+                    logger.info("plan_missing_lunch_insert_reverted trip_id=%s code=%s", trip_id, error.code)
+            filled = self._fill_long_gaps(base, candidate_places, trip)
             if filled is not days:
                 try:
                     self._validate_temporal_draft(filled, candidate_places)
@@ -3116,6 +3948,14 @@ class PlanGenerationService:
                     days, legs = filled, filled_legs
                 except AppError as error:
                     logger.info("plan_gap_fill_reverted trip_id=%s code=%s", trip_id, error.code)
+            extended = self._extend_short_days(days, candidate_places, trip)
+            if extended is not days:
+                try:
+                    self._validate_temporal_draft(extended, candidate_places)
+                    extended_legs = self._validate_route_timing(extended, candidate_places, trip) or {}
+                    days, legs = extended, extended_legs
+                except AppError as error:
+                    logger.info("plan_short_day_extension_reverted trip_id=%s code=%s", trip_id, error.code)
             stage("gap_fill")
             # The production factory wraps a configured route provider in this
             # request-scoped cache.  Only then do we have the route-fact contract

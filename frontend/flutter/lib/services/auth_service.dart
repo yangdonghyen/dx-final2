@@ -9,6 +9,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/api/api_client.dart';
 import 'active_trip_service.dart';
 
+/// The account that last logged in on this phone.
+const _lastUserIdKey = 'auth_last_user_id';
+
 class AuthSession {
   AuthSession._();
 
@@ -105,8 +108,15 @@ class AuthSession {
   /// Sessions saved before the name was stored have no name; load it once
   /// from GET /api/v1/users/me.
   static Future<void> loadDisplayNameIfMissing() async {
+    if (displayName != null) return;
+    await refreshDisplayName();
+  }
+
+  /// Reads the current nickname from the server (it may have changed since
+  /// the name was stored, e.g. on another device).
+  static Future<void> refreshDisplayName() async {
     final token = accessToken;
-    if (token == null || displayName != null) return;
+    if (token == null) return;
     try {
       final response = await ApiClient().get(
         '/api/v1/users/me',
@@ -161,6 +171,14 @@ class AuthService {
     final refreshToken = response['refresh_token'];
     final user = response['user'];
     final nickname = user is Map<String, dynamic> ? user['nickname'] : null;
+    // Another account on this phone must not see the previous account's
+    // current trip (it stays in local storage until logout).
+    final userId = user is Map<String, dynamic> ? user['user_id']?.toString() : null;
+    final preferences = await SharedPreferences.getInstance();
+    if (userId == null || preferences.getString(_lastUserIdKey) != userId) {
+      await ActiveTripService.clear();
+    }
+    if (userId != null) await preferences.setString(_lastUserIdKey, userId);
     await AuthSession.store(
       accessToken: accessToken,
       refreshToken: refreshToken is String && refreshToken.isNotEmpty
@@ -210,6 +228,8 @@ class AuthService {
         refreshToken: rotated is String && rotated.isNotEmpty ? rotated : refresh,
         displayName: AuthSession.displayName,
       );
+      // An auto login keeps the stored name; pick up a nickname change.
+      await AuthSession.refreshDisplayName();
       return true;
     } catch (error) {
       debugPrint('[Auth] auto login failed: $error');

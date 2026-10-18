@@ -659,6 +659,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 _savedPlaceCount == null ? '-' : '$_savedPlaceCount곳',
               ),
             ),
+            // Same three numbers as the basic mode card.
+            SizedBox(height: 38, child: VerticalDivider()),
+            Expanded(
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () => _push(const UpcomingTripsScreen()),
+                child: _Stat(
+                  '예정 여행',
+                  _upcomingTripCount == null ? '-' : '$_upcomingTripCount개',
+                ),
+              ),
+            ),
           ],
         ),
       ],

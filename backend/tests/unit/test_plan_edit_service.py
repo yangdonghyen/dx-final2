@@ -22,7 +22,7 @@ class Items:
     def get(self,item_id): return next((x for x in self.s.items if x.item_id==item_id),None)
     def list(self,plan_id): return sorted([x for x in self.s.items if x.plan_id==plan_id],key=lambda x:(x.visit_date,x.sequence_no,x.item_id))
     def create(self,plan_id,**fields):
-        item=SimpleNamespace(item_id=max(x.item_id for x in self.s.items)+1,plan_id=plan_id,transport_mode_from_previous=None,travel_minutes_from_previous=None,travel_distance_meters_from_previous=None,recommendation_reason=None,**fields); self.s.items.append(item); return item
+        item=SimpleNamespace(**{"item_id":max(x.item_id for x in self.s.items)+1,"plan_id":plan_id,"transport_mode_from_previous":None,"travel_minutes_from_previous":None,"travel_distance_meters_from_previous":None,"recommendation_reason":None,**fields}); self.s.items.append(item); return item
     def delete(self,item): self.s.items.remove(item)
     def update(self,item,**fields):
         for key,value in fields.items(): setattr(item,key,value)
@@ -99,3 +99,44 @@ def test_owner_archived_and_failed_edits_rollback(edit):
 def test_edit_endpoint_is_registered_and_requires_authentication(client):
     assert "/api/v1/plans/{plan_id}/edit" in client.get("/openapi.json").json()["paths"]
     assert client.post("/api/v1/plans/1/edit",json={"operation":"DELETE_PLACE","item_id":1}).status_code==401
+
+def test_add_place_inserts_after_item_and_pushes_later_stops(edit):
+    service,s=edit; result=service.edit(1,10,request("ADD_PLACE",day=1,after_item_id=101,new_place_id=2,duration_minutes=60))
+    rows=sorted((x for x in s.items if x.plan_id==10), key=lambda x:x.sequence_no)
+    assert [(x.title,x.sequence_no,x.start_time,x.end_time) for x in rows]==[("Place 101",1,time(1),time(2)),("Cafe",2,time(2),time(3)),("Place 102",3,time(3),time(4))]
+    assert result.current_version==2 and s.validations==1
+
+def test_add_place_rejects_unknown_place_and_missing_fields(edit):
+    service,s=edit
+    with pytest.raises(AppError) as error: service.edit(1,10,request("ADD_PLACE",day=1,after_item_id=101,new_place_id=999))
+    assert error.value.code=="PLACE_NOT_FOUND"
+    with pytest.raises(AppError) as error: service.edit(1,10,request("ADD_PLACE",day=1,after_item_id=101))
+    assert error.value.code=="INVALID_EDIT_PAYLOAD" and s.plan.current_version==1
+
+def test_add_place_uses_chosen_time_and_note(edit):
+    service,s=edit; service.edit(1,10,request("ADD_PLACE",day=1,after_item_id=101,new_place_id=2,start_time="03:30",note="부산 주소"))
+    added=next(x for x in s.items if x.title=="Cafe")
+    assert added.start_time==time(3,30) and added.end_time==time(4,30) and added.user_note=="부산 주소"
+
+def test_add_place_time_inside_a_stop_starts_when_it_ends(edit):
+    service,s=edit; service.edit(1,10,request("ADD_PLACE",day=1,new_place_id=2,start_time="01:30"))
+    rows=sorted((x for x in s.items if x.plan_id==10), key=lambda x:x.sequence_no)
+    assert [(x.title,x.start_time) for x in rows]==[("Place 101",time(1)),("Cafe",time(2)),("Place 102",time(3))]
+
+def test_add_place_before_the_first_stop(edit):
+    service,s=edit; service.edit(1,10,request("ADD_PLACE",day=1,new_place_id=2,start_time="00:00"))
+    rows=sorted((x for x in s.items if x.plan_id==10), key=lambda x:x.sequence_no)
+    assert [(x.title,x.start_time) for x in rows]==[("Cafe",time(0)),("Place 101",time(1)),("Place 102",time(2))]
+
+def test_removing_an_added_place_puts_later_stops_back(edit):
+    service,s=edit
+    snapshots=[]
+    service.revisions.create=lambda plan_id,**fields: snapshots.append(SimpleNamespace(plan_id=plan_id,**fields))
+    service.revisions.list_newest_first=lambda plan_id: list(reversed(snapshots))
+    service.edit(1,10,request("ADD_PLACE",day=1,new_place_id=2,start_time="01:30"))
+    rows=sorted((x for x in s.items if x.plan_id==10), key=lambda x:x.sequence_no)
+    assert [(x.title,x.start_time) for x in rows]==[("Place 101",time(1)),("Cafe",time(2)),("Place 102",time(3))]
+    added=rows[1]
+    service.edit(1,10,request("DELETE_PLACE",item_id=added.item_id))
+    rows=sorted((x for x in s.items if x.plan_id==10), key=lambda x:x.sequence_no)
+    assert [(x.title,x.start_time,x.end_time) for x in rows]==[("Place 101",time(1),time(2)),("Place 102",time(2),time(3))]

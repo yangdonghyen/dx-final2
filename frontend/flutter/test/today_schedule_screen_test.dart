@@ -251,5 +251,5 @@ void main() {
     expect(find.text('확인이 필요한 일정'), findsOneWidget);
     expect(find.textContaining('점심(11:00~14:00) 식사 일정이 없어요'), findsOneWidget);
     expectNoSampleCourse();
-  });
+  }, skip: !showPlanWarnings); // hidden for the demo video
 }

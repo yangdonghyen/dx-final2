@@ -130,6 +130,8 @@ class _ItineraryRouteMapState extends State<ItineraryRouteMap> {
                       points: points.map((item) => item.position).toList(),
                       color: AppColors.primary,
                       strokeWidth: 4,
+                      // Dashed: the order of stops, not an exact road route.
+                      pattern: StrokePattern.dashed(segments: const [12, 8]),
                     ),
                   ],
                 ),
