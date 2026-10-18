@@ -2,6 +2,7 @@
 
 import copy
 import logging
+import re
 import threading
 import time as clock
 from dataclasses import replace
@@ -428,6 +429,17 @@ BLOCKED_PLAN_PLACE_KEYWORDS = (
     "PC방",
     "피시방",
     "사무실",
+    # Not a place a traveller visits (seen 2026-10-16~18: a warehouse
+    # cafeteria as dinner, a self photo studio and a welfare centre as sights).
+    "쿠팡",
+    "물류센터",
+    "구내식당",
+    "사내식당",
+    "사진관",
+    "포토스튜디오",
+    "셀프스튜디오",
+    "사회복지시설",
+    "평생교육",
     "오피스",
 )
 
@@ -1070,13 +1082,30 @@ class PlanGenerationService:
                     taken.add(queue[index].place_id)
         return ordered + [row for row in restaurants if row.place_id not in taken]
 
+    @staticmethod
+    def _one_course_per_trail(places):
+        """One course of a numbered trail ("올레길 6코스", "올레길 7코스", 
+        "남파랑길 40코스"): three 올레 courses filled a Jeju trip.  The first
+        course in the incoming order stays; the rest are left out."""
+        seen, kept = set(), []
+        for place in places:
+            match = re.match(r"\s*(.+?)\s*\d+\s*코스", getattr(place, "name", None) or "")
+            if match:
+                trail = match.group(1).replace(" ", "")
+                if trail in seen:
+                    continue
+                seen.add(trail)
+            kept.append(place)
+        return kept
+
     @classmethod
     def _balanced_candidate_pool(cls, candidates, anchors, trip, targets=None):
         """Reserve verified sights (spread over areas) and meal restaurants first."""
         anchor_ids = {anchor.place_id for anchor in anchors}
         selected = [candidate for candidate in candidates if candidate.place_id in anchor_ids]
         automatic = [candidate for candidate in candidates if candidate.place_id not in anchor_ids]
-        activities = cls._interleave_by_area([candidate for candidate in automatic if not _is_food_or_cafe(candidate)])
+        activities = cls._interleave_by_area(cls._one_course_per_trail(
+            [candidate for candidate in automatic if not _is_food_or_cafe(candidate)]))
         food_or_cafes = [candidate for candidate in automatic if _is_food_or_cafe(candidate)]
         restaurants = cls._restaurants_by_area([candidate for candidate in food_or_cafes if is_restaurant(candidate)], activities)
         trip_days = (trip.end_date - trip.start_date).days + 1

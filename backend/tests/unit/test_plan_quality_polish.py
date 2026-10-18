@@ -222,3 +222,12 @@ def test_a_night_visit_is_dropped_before_travel_times():
     assert [item.place_id for item, _, _ in result[0][1]] == [1, 2]
     anchored = service._drop_night_visits([(date(2026, 11, 14), rows)], {3}, SimpleNamespace(trip_id=1))
     assert [item.place_id for item, _, _ in anchored[0][1]] == [1, 2, 3]
+
+
+def test_one_course_per_numbered_trail_and_non_tourist_places_are_out():
+    from app.services.plan_generation_service import _is_usable_plan_candidate
+    trails = [SimpleNamespace(name=n) for n in ("올레길 7코스(서귀포-월평 올레)", "올레길 6코스", "성산일출봉", "남파랑길 40코스", "남파랑길 45코스")]
+    kept = [p.name for p in PlanGenerationService._one_course_per_trail(trails)]
+    assert kept == ["올레길 7코스(서귀포-월평 올레)", "성산일출봉", "남파랑길 40코스"]
+    assert not _is_usable_plan_candidate(place(1, "쿠팡 전라광주2,5센터 식당", "음식점 > 한식"))
+    assert not _is_usable_plan_candidate(place(2, "코지필름셀프사진관", "문화,예술 > 사진 > 사진관,포토스튜디오"))
