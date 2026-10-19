@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -79,13 +80,29 @@ class _MapScreenState extends State<MapScreen> {
       );
 
     if (kakaoJavascriptKey.isNotEmpty) {
-      webViewController.loadHtmlString(
-        _buildMapHtml(),
-        baseUrl: 'https://localhost',
-      );
+      unawaited(_loadMapAtLastKnownPosition());
     } else {
       status = 'Kakao JavaScript Key가 전달되지 않았어요.';
     }
+  }
+
+  /// Opens the map where the phone last was (no prompt, no GPS wait), so the
+  /// first view is already around the user instead of Seoul City Hall.
+  Future<void> _loadMapAtLastKnownPosition() async {
+    try {
+      final permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.always || permission == LocationPermission.whileInUse) {
+        final last = await Geolocator.getLastKnownPosition();
+        if (last != null) {
+          latitude = last.latitude;
+          longitude = last.longitude;
+        }
+      }
+    } catch (e) {
+      debugPrint('마지막 위치 조회 실패: $e');
+    }
+    if (!mounted) return;
+    await webViewController.loadHtmlString(_buildMapHtml(), baseUrl: 'https://localhost');
   }
 
   Future<void> _locate() async {
@@ -120,9 +137,18 @@ class _MapScreenState extends State<MapScreen> {
         return;
       }
 
+      // The last known spot first (instant), then the precise fix.
+      final last = await Geolocator.getLastKnownPosition();
+      if (last != null && mounted) {
+        latitude = last.latitude;
+        longitude = last.longitude;
+        await _moveMap(latitude, longitude);
+      }
+
       final gps = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 10),
         ),
       );
 
@@ -273,8 +299,8 @@ let currentOverlay = null;
 let placeMarkers = [];
 let placeOverlays = [];
 
-let currentLat = $fallbackLatitude;
-let currentLng = $fallbackLongitude;
+let currentLat = $latitude;
+let currentLng = $longitude;
 
 function initMap() {
   const initialPosition =

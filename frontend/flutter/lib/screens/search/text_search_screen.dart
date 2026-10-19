@@ -12,6 +12,7 @@ import '../preference/youtube_saved_detail_screen.dart';
 import '../discovery/camera_screen.dart';
 import '../preference/youtube_saved_screen.dart';
 import '../trip/trip_places_screen.dart';
+import 'voice_search_screen.dart';
 
 enum _SearchMode { region, link }
 
@@ -454,13 +455,22 @@ class _TextSearchScreenState extends State<TextSearchScreen> {
               decoration: InputDecoration(
                 prefixIcon: const Icon(Icons.search),
                 hintText: '예: 강릉, 제주, 안목해변',
-                suffixIcon: IconButton(
-                  onPressed: () {
-                    controller.clear();
-                    _startSearch('');
-                  },
-                  icon: const Icon(Icons.close),
-                ),
+                // Nothing typed yet: the mic opens voice search instead.
+                suffixIcon: controller.text.trim().isEmpty
+                    ? IconButton(
+                        tooltip: '말로 검색',
+                        onPressed: () => Navigator.of(context).pushReplacement(
+                          MaterialPageRoute(builder: (_) => const VoiceSearchScreen()),
+                        ),
+                        icon: const Icon(Icons.mic_rounded, color: AppColors.primary),
+                      )
+                    : IconButton(
+                        onPressed: () {
+                          controller.clear();
+                          _startSearch('');
+                        },
+                        icon: const Icon(Icons.close),
+                      ),
               ),
             ),
             const SizedBox(height: 20),
